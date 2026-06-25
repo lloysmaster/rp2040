@@ -35,8 +35,9 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(rp2040 rp2040.c
-                      hal/mpu/mpu.c
+add_executable(rp2040 
+                        src/main.c
+                      src/hal/mpu/mpu.c
     )
 
 pico_set_program_name(rp2040 "rp2040")
@@ -54,7 +55,7 @@ target_link_libraries(rp2040
 
 # Add the standard include files to the build
 target_include_directories(rp2040 PRIVATE
-        ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/src
 )
 
 pico_add_extra_outputs(rp2040)
