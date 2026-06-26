@@ -23,30 +23,35 @@ typedef struct {
 } mpu_config_t;
 
 /**
- * @brief Inicializa el hardware SPI y configura el MPU6500.
+ * @brief Inicializa el hardware SPI, reserva los canales DMA y configura el MPU6500.
  * @param config Puntero a la estructura de configuración.
  */
 void mpu_init(mpu_config_t *config);
 
 /**
- * @brief Escribe un byte en un registro específico.
+ * @brief Escribe un byte en un registro específico (Bloqueante estándar para configuración).
  */
 void mpu_write(uint8_t reg, uint8_t data);
 
 /**
- * @brief Lee varios bytes desde un registro.
+ * @brief Lee varios bytes desde un registro utilizando canales DMA TX y RX en paralelo.
  */
 void mpu_read(uint8_t reg, uint8_t *buf, uint8_t len);
 
 /**
- * @brief Lee los 3 ejes del acelerómetro y los convierte a Q16_16.
+ * @brief Lee los 3 ejes del acelerómetro usando DMA y los convierte a Q16_16.
  * @param output Arreglo de 3 elementos q16_16.
  */
 void mpu_read_accel_fixed(q16_16 *output);
+
+/**
+ * @brief Lee los 3 ejes del giroscopio usando DMA y los convierte a Q16_16.
+ * @param output Arreglo de 3 elementos q16_16.
+ */
 void mpu_read_gyro_fixed(q16_16 *output);
 
 /**
- * @brief Función para configurar la interrupción Data Ready en el sensor.
+ * @brief Configura la interrupción Data Ready en el sensor.
  */
 void mpu_enable_drdy(void);
 

@@ -38,6 +38,7 @@ pico_sdk_init()
 add_executable(rp2040 
                         src/main.c
                       src/hal/mpu/mpu.c
+                      src/hal/rx/crossfire.c
     )
 
 pico_set_program_name(rp2040 "rp2040")
