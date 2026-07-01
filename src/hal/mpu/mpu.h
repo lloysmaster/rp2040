@@ -7,8 +7,10 @@
 
 // Direcciones de registros clave (MPU6500)
 #define MPU_REG_ACCEL_XOUT_H  0x3B
+#define MPU_REG_GYRO_XOUT_H  0x43
 #define MPU_REG_INT_PIN_CFG   0x37
 #define MPU_REG_INT_ENABLE    0x38
+#define MPU_REG_GYRO_CONFIG   0x1B
 #define MPU_REG_PWR_MGMT_1    0x6B
 #define MPU_REG_WHO_AM_I      0x75
 
@@ -20,6 +22,7 @@ typedef struct {
     uint8_t pin_mosi;
     uint8_t pin_miso;
     uint8_t pin_drdy;
+    uint16_t gyro_sensitivity_lsb_per_dps;
 } mpu_config_t;
 
 /**

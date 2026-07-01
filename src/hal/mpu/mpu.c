@@ -10,6 +10,19 @@ static int dma_tx_chan = -1;
 static int dma_rx_chan = -1;
 static uint8_t dma_dummy_byte = 0x00;
 
+static uint8_t mpu_gyro_fs_bits_from_sensitivity(uint16_t sensitivity_lsb_per_dps) {
+    if (sensitivity_lsb_per_dps >= 131) {
+        return 0x00; // ±250 °/s -> 131 LSB/(°/s)
+    }
+    if (sensitivity_lsb_per_dps >= 65) {
+        return 0x08; // ±500 °/s -> 65.5 LSB/(°/s)
+    }
+    if (sensitivity_lsb_per_dps >= 32) {
+        return 0x10; // ±1000 °/s -> 32.8 LSB/(°/s)
+    }
+    return 0x18; // ±2000 °/s -> 16.4 LSB/(°/s)
+}
+
 void mpu_init(mpu_config_t *config) {
     g_cfg = config;
 
@@ -32,6 +45,12 @@ void mpu_init(mpu_config_t *config) {
     // Solicitar canales DMA libres del sistema
     if (dma_tx_chan < 0) dma_tx_chan = dma_claim_unused_channel(true);
     if (dma_rx_chan < 0) dma_rx_chan = dma_claim_unused_channel(true);
+
+    // Configurar la sensibilidad del giroscopio en el registro GYRO_CONFIG
+    uint16_t sensitivity = (g_cfg->gyro_sensitivity_lsb_per_dps != 0)
+        ? g_cfg->gyro_sensitivity_lsb_per_dps
+        : 131;
+    mpu_write(MPU_REG_GYRO_CONFIG, mpu_gyro_fs_bits_from_sensitivity(sensitivity));
 }
 
 void mpu_write(uint8_t reg, uint8_t data) {
@@ -111,16 +130,19 @@ void mpu_read_accel_fixed(q16_16 *output) {
 void mpu_read_gyro_fixed(q16_16 *output) {
     uint8_t raw[6];
     // Los registros de velocidad angular comienzan en 0x43 (GYRO_XOUT_H)
-    mpu_read(0x43, raw, 6); // Lectura por DMA
+    mpu_read(MPU_REG_GYRO_XOUT_H, raw, 6); // Lectura por DMA
 
     int16_t gx = (raw[0] << 8) | raw[1];
     int16_t gy = (raw[2] << 8) | raw[3];
     int16_t gz = (raw[4] << 8) | raw[5];
 
-    // Sensibilidad por defecto: 131 LSB/(°/s)
-    output[0] = q_div(TO_Q16(gx), TO_Q16(131));
-    output[1] = q_div(TO_Q16(gy), TO_Q16(131));
-    output[2] = q_div(TO_Q16(gz), TO_Q16(131));
+    uint16_t sensitivity = (g_cfg != NULL && g_cfg->gyro_sensitivity_lsb_per_dps != 0)
+        ? g_cfg->gyro_sensitivity_lsb_per_dps
+        : 131;
+
+    output[0] = q_div(TO_Q16(gx), TO_Q16(sensitivity));
+    output[1] = q_div(TO_Q16(gy), TO_Q16(sensitivity));
+    output[2] = q_div(TO_Q16(gz), TO_Q16(sensitivity));
 }
 
 void mpu_enable_drdy(void) {

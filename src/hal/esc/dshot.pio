@@ -1,0 +1,22 @@
+.program dshot
+
+.wrap_target
+    pull block
+    set y, 15
+
+bitloop:
+    out x, 1
+    jmp !x, do_zero
+
+do_one:
+    set pins, 1 [14]
+    set pins, 0 [10]
+    jmp check_loop
+
+do_zero:
+    set pins, 1 [7]
+    set pins, 0 [17]
+
+check_loop:
+    jmp y--, bitloop
+.wrap

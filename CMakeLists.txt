@@ -39,7 +39,13 @@ add_executable(rp2040
                         src/main.c
                       src/hal/mpu/mpu.c
                       src/hal/rx/crossfire.c
+                      src/core/attitude.c
+                      src/control/pid.c
+                      src/control/mixer.c
+                      src/hal/esc/dshot.c
     )
+
+pico_generate_pio_header(rp2040 ${CMAKE_CURRENT_LIST_DIR}/src/hal/esc/dshot.pio)
 
 pico_set_program_name(rp2040 "rp2040")
 pico_set_program_version(rp2040 "0.1")
@@ -52,10 +58,12 @@ pico_enable_stdio_usb(rp2040 1)
 target_link_libraries(rp2040
         pico_stdlib
         hardware_spi
-        hardware_dma)
+        hardware_dma
+        hardware_pio)
 
 # Add the standard include files to the build
 target_include_directories(rp2040 PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/src
 )
 
