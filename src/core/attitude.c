@@ -3,10 +3,16 @@
 #include "control/pid.h"
 #include "control/mixer.h"
 
+typedef struct {
+    float prev_filtered[3];
+} filter_state_t;
+
 static pid_t roll_pid;
 static pid_t pitch_pid;
 static pid_t yaw_pid;
 static bool attitude_ready = false;
+static flight_mode_t current_mode = FLIGHT_MODE_STABILIZED;
+static filter_state_t filter_state;
 
 static float q16_to_float(q16_16 value) {
     return (float)value / 65536.0f;
@@ -27,11 +33,48 @@ static float rc_to_rate(uint16_t channel) {
     return (float)centered * 0.25f;
 }
 
+static void apply_notch_filter(const float raw[3], float filtered[3]) {
+    const float alpha = 0.18f;
+    for (int i = 0; i < 3; ++i) {
+        filter_state.prev_filtered[i] = filter_state.prev_filtered[i] + alpha * (raw[i] - filter_state.prev_filtered[i]);
+        filtered[i] = filter_state.prev_filtered[i];
+    }
+}
+
+static void apply_sensor_filter(const q16_16 gyro[3], float filtered[3]) {
+    float raw[3];
+    for (int i = 0; i < 3; ++i) {
+        raw[i] = q16_to_float(gyro[i]);
+    }
+
+    switch (current_mode) {
+        case FLIGHT_MODE_KALMAN:
+            for (int i = 0; i < 3; ++i) {
+                filtered[i] = raw[i];
+            }
+            break;
+        case FLIGHT_MODE_STABILIZED:
+        case FLIGHT_MODE_ACRO:
+        case FLIGHT_MODE_RATE:
+        case FLIGHT_MODE_FREESTYLE:
+        default:
+            apply_notch_filter(raw, filtered);
+            break;
+    }
+}
+
 void attitude_init(void) {
     pid_init(&roll_pid, 0.25f, 0.01f, 0.002f, 500.0f, 2000.0f);
     pid_init(&pitch_pid, 0.25f, 0.01f, 0.002f, 500.0f, 2000.0f);
     pid_init(&yaw_pid, 0.18f, 0.005f, 0.001f, 300.0f, 1500.0f);
+    for (int i = 0; i < 3; ++i) {
+        filter_state.prev_filtered[i] = 0.0f;
+    }
     attitude_ready = true;
+}
+
+void attitude_set_mode(flight_mode_t mode) {
+    current_mode = mode;
 }
 
 void attitude_update(const crsf_data_t *rc_data, const q16_16 gyro[3], attitude_cmd_t *output) {
@@ -40,9 +83,11 @@ void attitude_update(const crsf_data_t *rc_data, const q16_16 gyro[3], attitude_
     }
 
     const float dt_s = 0.005f;
-    const float roll_rate = q16_to_float(gyro[0]);
-    const float pitch_rate = q16_to_float(gyro[1]);
-    const float yaw_rate = q16_to_float(gyro[2]);
+    float filtered_rates[3];
+    apply_sensor_filter(gyro, filtered_rates);
+    const float roll_rate = filtered_rates[0];
+    const float pitch_rate = filtered_rates[1];
+    const float yaw_rate = filtered_rates[2];
 
     const float desired_roll = rc_to_rate(rc_data->channels[0]);
     const float desired_pitch = -rc_to_rate(rc_data->channels[1]);

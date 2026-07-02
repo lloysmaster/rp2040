@@ -49,6 +49,7 @@ int main() {
     // --- Inicialización del receptor Crossfire ---
     crsf_init();
     attitude_init();
+    attitude_set_mode(FLIGHT_MODE_STABILIZED);
     mixer_init();
     dshot_init(MOTOR_BASE_PIN);
     dshot_set_throttle(0);
