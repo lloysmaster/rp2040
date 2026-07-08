@@ -9,7 +9,7 @@
 #define PIN_SCK          10
 #define PIN_MOSI         11
 //se asignan +3 pines para los motores
-#define MOTOR_BASE_PIN   16 
+#define MOTOR_BASE_PIN   18 
 
 
 #endif

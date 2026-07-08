@@ -8,6 +8,13 @@ void mixer_mix(const attitude_cmd_t *attitude, mixer_output_t *output) {
         return;
     }
 
+    if (!attitude->enabled) {
+        for (int i = 0; i < 4; ++i) {
+            output->motor[i] = 0;
+        }
+        return;
+    }
+
     int32_t throttle = attitude->throttle;
     int32_t roll = attitude->roll_output;
     int32_t pitch = attitude->pitch_output;

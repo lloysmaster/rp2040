@@ -82,6 +82,15 @@ void attitude_update(const crsf_data_t *rc_data, const q16_16 gyro[3], attitude_
         return;
     }
 
+    if (!rc_data->is_connected) {
+        output->roll_output = 0;
+        output->pitch_output = 0;
+        output->yaw_output = 0;
+        output->throttle = 0;
+        output->enabled = false;
+        return;
+    }
+
     const float dt_s = 0.005f;
     float filtered_rates[3];
     apply_sensor_filter(gyro, filtered_rates);

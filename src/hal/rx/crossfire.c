@@ -11,6 +11,7 @@
 #define CRSF_SYNC_BYTE 0xC8
 #define CRSF_RC_CHANNELS_TYPE 0x16
 #define CRSF_PAYLOAD_SIZE 22 // 22 bytes para 16 canales de 11 bits
+#define CRSF_FAILSAFE_TIMEOUT_US 200000u
 
 // Búfer circular alineado a 256 bytes (requerimiento del DMA de la RP2040 para wrap_ring)
 uint8_t __attribute__((aligned(256))) crsf_rx_buffer[256];
@@ -102,6 +103,15 @@ void crsf_init(void) {
 
 bool crsf_update(void) {
     bool new_data_ready = false;
+
+    if (crsf_state.is_connected && (time_us_32() - crsf_state.last_packet_time) > CRSF_FAILSAFE_TIMEOUT_US) {
+        crsf_state.is_connected = false;
+        for (int i = 0; i < CRSF_MAX_CHANNELS; ++i) {
+            crsf_state.channels[i] = 0;
+        }
+        crsf_state.channels[2] = 0;
+        crsf_state.channels[4] = 0;
+    }
     
     // Calcular dónde está escribiendo el DMA ahora mismo (dirección relativa al inicio del búfer)
     uint32_t current_dma_write_ptr = (uint32_t)dma_channel_hw_addr(dma_chan)->write_addr;
