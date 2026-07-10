@@ -2,6 +2,7 @@
 #include "attitude.h"
 #include "control/pid.h"
 #include "control/mixer.h"
+#include "hal/esc/dshot.h"
 
 typedef struct {
     float prev_filtered[3];
@@ -55,8 +56,6 @@ static void apply_sensor_filter(const q16_16 gyro[3], float filtered[3]) {
             break;
         case FLIGHT_MODE_STABILIZED:
         case FLIGHT_MODE_ACRO:
-        case FLIGHT_MODE_RATE:
-        case FLIGHT_MODE_FREESTYLE:
         default:
             apply_notch_filter(raw, filtered);
             break;
@@ -105,6 +104,17 @@ void attitude_update(const crsf_data_t *rc_data, const q16_16 gyro[3], attitude_
     output->roll_output = (int32_t)pid_update(&roll_pid, desired_roll, roll_rate, dt_s);
     output->pitch_output = (int32_t)pid_update(&pitch_pid, desired_pitch, pitch_rate, dt_s);
     output->yaw_output = (int32_t)pid_update(&yaw_pid, desired_yaw, yaw_rate, dt_s);
-    output->throttle = (rc_data->channels[2] < 172) ? 0 : (int32_t)((rc_data->channels[2] - 172) * 1000 / 1639);
+
+    const uint16_t rc_throttle = rc_data->channels[2];
+    const uint16_t throttle_min = 172u;
+    const uint16_t throttle_max = 1811u;
+    if (rc_throttle <= throttle_min) {
+        output->throttle = (int32_t)DSHOT_MIN_THROTTLE;
+    } else {
+        output->throttle = (int32_t)((rc_throttle - throttle_min) * 1000u / (throttle_max - throttle_min));
+        if (output->throttle < (int32_t)DSHOT_MIN_THROTTLE) {
+            output->throttle = (int32_t)DSHOT_MIN_THROTTLE;
+        }
+    }
     output->enabled = rc_data->is_connected;
 }

@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define DSHOT_MIN_THROTTLE 48u
+#define DSHOT_MIN_THROTTLE 70u
 #define DSHOT_MAX_THROTTLE 2047u
 #define DSHOT_CMD_MOTOR_STOP 0u
 #define DSHOT_CMD_BEEP1 1u

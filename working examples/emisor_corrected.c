@@ -113,6 +113,14 @@ void loop() {
   Serial.print(channels[3]);
   Serial.print(" CH4:");
   Serial.println(channels[4]);
+  Serial.print("Raw X:");
+  Serial.print(rawX);
+  Serial.print(" Raw Y:");
+  Serial.print(rawY);
+  Serial.print(" Raw 2Y:");
+  Serial.print(raw2Y);
+  Serial.print(" Raw 2X:");
+  Serial.println(raw2X);
 
   uint8_t packet[26];
   packet[0] = 0xC8;       // Sync
