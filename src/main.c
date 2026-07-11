@@ -1,62 +1,51 @@
-#include <stdio.h>
 #include "pico/stdlib.h"
 #include "hardware/gpio.h"
 
-// Asegúrate de que las rutas a los headers coincidan con la estructura de tus carpetas
-#include "hal/mpu/mpu.h"
-#include "hal/rx/crossfire.h" 
-#include "math/fixed_point.h"
-#include "core/attitude.h"
-#include "control/mixer.h"
-#include "hal/esc/dshot.h"
 #include "config/pinout.h"
+#include "control/mixer.h"
+#include "core/attitude.h"
+#include "hal/esc/dshot.h"
+#include "hal/mpu/mpu.h"
+#include "hal/rx/crossfire.h"
+#include "math/fixed_point.h"
 
-#define ARM_THRESHOLD 250
-#define DISARM_THRESHOLD 180
-#define SAFE_ARMED_IDLE_THROTTLE DSHOT_MIN_THROTTLE
-
-volatile bool data_ready = false;
+static volatile bool data_ready = false;
 
 // Callback de la interrupción externa del GPIO (MPU DRDY)
-void gpio_callback(uint gpio, uint32_t events) {
-    if (gpio == 14) { // Pin DRDY
+static void gpio_callback(uint gpio, uint32_t events) {
+    (void)events;
+    if (gpio == PIN_DRDY) {
         data_ready = true;
     }
 }
 
-int main() {
-    
-
-
-
+int main(void) {
     // --- Inicialización del sensor MPU6500 ---
-    mpu_config_t cfg = {
-        .spi = spi1, 
-        .pin_cs = 13, 
-        .pin_sck = 10,
-        .pin_mosi = 11, 
-        .pin_miso = 12, 
-        .pin_drdy = 14,
+    const mpu_config_t cfg = {
+        .spi = MPU_SPI_INST,
+        .pin_cs = PIN_CS,
+        .pin_sck = PIN_SCK,
+        .pin_mosi = PIN_MOSI,
+        .pin_miso = PIN_MISO,
+        .pin_drdy = PIN_DRDY,
         .gyro_sensitivity_lsb_per_dps = 131
     };
-    
+
     mpu_init(&cfg);
     mpu_enable_drdy();
-    
+
     // Habilitar interrupción física en el flanco de subida del pin DRDY
-    gpio_set_irq_enabled_with_callback(14, GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
+    gpio_set_irq_enabled_with_callback(PIN_DRDY, GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
 
     // --- Inicialización del receptor Crossfire ---
     crsf_init();
     attitude_init();
-    attitude_set_mode(FLIGHT_MODE_ACRO);
-    mixer_init();
-    dshot_init(MOTOR_BASE_PIN);
-        for (int i = 0; i < 4; ++i) {
-            dshot_set_throttle(i, 0);
-        }
-
-    
+    if (!dshot_init(MOTOR_BASE_PIN)) {
+        return 1;
+    }
+    for (int i = 0; i < 4; ++i) {
+        dshot_set_throttle(i, 0);
+    }
 
     uint32_t last_loop_us = time_us_32();
     static bool esc_armed = false;
@@ -66,21 +55,15 @@ int main() {
 
     while (true) {
         // 1. Procesar datos del receptor Crossfire (No bloqueante)
+        crsf_update();
         const crsf_data_t* rc_data = crsf_get_data();
-        if (crsf_update()) {
-            // CRSF entrega valores entre ~172 y ~1811 (centro en 992)
-            
-        }
 
-        // 2. Procesar datos del MPU (Acelerómetro y Giroscopio)
+        // 2. Procesar datos del giroscopio
         if (data_ready) {
             data_ready = false;
 
-            q16_16 accel_data[3];
-            mpu_read_accel_fixed(accel_data); // Ejecutado internamente bajo DMA
-
             q16_16 gyro_data[3];
-            mpu_read_gyro_fixed(gyro_data);   // Ejecutado internamente bajo DMA
+            mpu_read_gyro_fixed(gyro_data);
 
             attitude_update(rc_data, gyro_data, &last_attitude_cmd);
             mixer_mix(&last_attitude_cmd, &last_motor_cmd);
@@ -90,9 +73,13 @@ int main() {
             if (!esc_armed) {
                 esc_throttle[i] = 0;
             } else {
-                uint32_t val = (uint32_t)((last_motor_cmd.motor[i] * 2047u) / 1000u);
-                if (val > 2047u) val = 2047u;
-                if (val < SAFE_ARMED_IDLE_THROTTLE) val = SAFE_ARMED_IDLE_THROTTLE;
+                uint32_t val = (uint32_t)((last_motor_cmd.motor[i] * DSHOT_MAX_THROTTLE) / 1000u);
+                if (val > DSHOT_MAX_THROTTLE) {
+                    val = DSHOT_MAX_THROTTLE;
+                }
+                if (val < DSHOT_MIN_THROTTLE) {
+                    val = DSHOT_MIN_THROTTLE;
+                }
                 esc_throttle[i] = (uint16_t)val;
             }
         }
@@ -101,7 +88,6 @@ int main() {
             if (esc_armed) {
                 if (dshot_disarm()) {
                     esc_armed = false;
-                    
                 }
             }
             for (int i = 0; i < 4; ++i) {
@@ -115,32 +101,26 @@ int main() {
                 if (arm_switch && throttle_low) {
                     if (dshot_arm()) {
                         esc_armed = true;
-                        
                     }
                 }
-                for (int i = 0; i < 4; ++i) dshot_set_throttle(i, 0);
+                for (int i = 0; i < 4; ++i) {
+                    dshot_set_throttle(i, 0);
+                }
             } else {
                 if (!arm_switch) {
                     if (dshot_disarm()) {
                         esc_armed = false;
-                        
                     }
-                    for (int i = 0; i < 4; ++i) dshot_set_throttle(i, 0);
+                    for (int i = 0; i < 4; ++i) {
+                        dshot_set_throttle(i, 0);
+                    }
                 } else {
                     for (int i = 0; i < 4; ++i) {
-                        uint16_t motor_cmd = esc_throttle[i];
-                        if (esc_armed && motor_cmd < SAFE_ARMED_IDLE_THROTTLE) {
-                            motor_cmd = SAFE_ARMED_IDLE_THROTTLE;
-                        }
-                        dshot_set_throttle(i, motor_cmd);
+                        dshot_set_throttle(i, esc_throttle[i]);
                     }
                 }
             }
         }
-
-        
-
-        
 
         uint32_t now_us = time_us_32();
         uint32_t loop_dt_us = now_us - last_loop_us;
@@ -149,6 +129,6 @@ int main() {
             sleep_us(5000 - loop_dt_us);
         }
     }
-    
+
     return 0;
 }

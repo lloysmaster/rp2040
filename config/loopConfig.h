@@ -1,8 +1,0 @@
-#ifndef LOOPCONFIG_H
-#define LOOPCONFIG_H
-
-// --- PARÁMETROS DE VUELO ---
-#define LOOP_FREQ_HZ     2000
-#define TARGET_LOOP_US   (1000000 / LOOP_FREQ_HZ)
-
-#endif

@@ -1,7 +1,6 @@
 #include <stddef.h>
 #include "attitude.h"
 #include "control/pid.h"
-#include "control/mixer.h"
 #include "hal/esc/dshot.h"
 
 typedef struct {
@@ -12,7 +11,6 @@ static pid_t roll_pid;
 static pid_t pitch_pid;
 static pid_t yaw_pid;
 static bool attitude_ready = false;
-static flight_mode_t current_mode = FLIGHT_MODE_STABILIZED;
 static filter_state_t filter_state;
 
 static float q16_to_float(q16_16 value) {
@@ -48,18 +46,7 @@ static void apply_sensor_filter(const q16_16 gyro[3], float filtered[3]) {
         raw[i] = q16_to_float(gyro[i]);
     }
 
-    switch (current_mode) {
-        case FLIGHT_MODE_KALMAN:
-            for (int i = 0; i < 3; ++i) {
-                filtered[i] = raw[i];
-            }
-            break;
-        case FLIGHT_MODE_STABILIZED:
-        case FLIGHT_MODE_ACRO:
-        default:
-            apply_notch_filter(raw, filtered);
-            break;
-    }
+    apply_notch_filter(raw, filtered);
 }
 
 void attitude_init(void) {
@@ -70,10 +57,6 @@ void attitude_init(void) {
         filter_state.prev_filtered[i] = 0.0f;
     }
     attitude_ready = true;
-}
-
-void attitude_set_mode(flight_mode_t mode) {
-    current_mode = mode;
 }
 
 void attitude_update(const crsf_data_t *rc_data, const q16_16 gyro[3], attitude_cmd_t *output) {

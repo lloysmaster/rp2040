@@ -1,8 +1,5 @@
 #include "mixer.h"
 
-void mixer_init(void) {
-}
-
 void mixer_mix(const attitude_cmd_t *attitude, mixer_output_t *output) {
     if (attitude == 0 || output == 0) {
         return;

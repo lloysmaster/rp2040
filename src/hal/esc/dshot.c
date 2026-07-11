@@ -12,9 +12,9 @@
 
 static PIO s_pio = pio0;
 static int s_sm[4] = { -1, -1, -1, -1 };
-static uint32_t s_pin_base = 0;
 static bool s_initialized = false;
-static bool s_armed = false;
+
+static bool dshot_send_raw_packet(uint8_t motor, uint16_t packet_value, bool telemetry);
 
 static uint16_t dshot_build_frame(uint16_t value, bool telemetry)
 {
@@ -43,14 +43,22 @@ static bool dshot_send_frame_to_sm(int sm, uint16_t frame)
     return true;
 }
 
-static void dshot_startup_sequence(void)
+static bool dshot_send_stop_frames(uint32_t repeats, uint32_t interval_ms)
 {
-    for (int k = 0; k < 100; ++k) {
-        for (int i = 0; i < 4; ++i) {
-            dshot_send_frame_to_sm(s_sm[i], dshot_build_frame(0, false));
-        }
-        sleep_ms(10);
+    if (!s_initialized) {
+        return false;
     }
+
+    for (uint32_t k = 0; k < repeats; ++k) {
+        for (int i = 0; i < 4; ++i) {
+            if (!dshot_send_frame_to_sm(s_sm[i], dshot_build_frame(0, false))) {
+                return false;
+            }
+        }
+        sleep_ms(interval_ms);
+    }
+
+    return true;
 }
 
 bool dshot_init(uint32_t base_pin)
@@ -91,27 +99,8 @@ bool dshot_init(uint32_t base_pin)
         pio_sm_set_enabled(s_pio, s_sm[i], true);
     }
 
-    s_pin_base = base_pin;
     s_initialized = true;
-    dshot_startup_sequence();
-    return true;
-}
-
-void dshot_deinit(void)
-{
-    if (!s_initialized) {
-        return;
-    }
-
-    for (int i = 0; i < 4; ++i) {
-        if (s_sm[i] >= 0) {
-            pio_sm_set_enabled(s_pio, s_sm[i], false);
-            pio_sm_unclaim(s_pio, (uint)s_sm[i]);
-            s_sm[i] = -1;
-        }
-    }
-
-    s_initialized = false;
+    return dshot_send_stop_frames(100, 10);
 }
 
 bool dshot_set_throttle(uint8_t motor, uint16_t throttle)
@@ -133,7 +122,7 @@ bool dshot_set_throttle(uint8_t motor, uint16_t throttle)
     return dshot_send_raw_packet(motor, throttle, false);
 }
 
-bool dshot_send_raw_packet(uint8_t motor, uint16_t packet_value, bool telemetry)
+static bool dshot_send_raw_packet(uint8_t motor, uint16_t packet_value, bool telemetry)
 {
     if (!s_initialized || motor >= 4 || packet_value > 0x07FF) {
         return false;
@@ -145,53 +134,10 @@ bool dshot_send_raw_packet(uint8_t motor, uint16_t packet_value, bool telemetry)
 
 bool dshot_arm(void)
 {
-    if (!s_initialized) {
-        return false;
-    }
-
-    for (int i = 0; i < 5; ++i) {
-        for (int m = 0; m < 4; ++m) {
-            dshot_send_frame_to_sm(s_sm[m], dshot_build_frame(0, false));
-        }
-        sleep_ms(20);
-    }
-
-    s_armed = true;
-    return true;
+    return dshot_send_stop_frames(5, 20);
 }
 
 bool dshot_disarm(void)
 {
-    if (!s_initialized) {
-        return false;
-    }
-
-    for (int i = 0; i < 5; ++i) {
-        for (int m = 0; m < 4; ++m) {
-            dshot_send_frame_to_sm(s_sm[m], dshot_build_frame(0, false));
-        }
-        sleep_ms(20);
-    }
-
-    s_armed = false;
-    return true;
-}
-
-bool dshot_is_armed(void)
-{
-    return s_initialized && s_armed;
-}
-
-bool dshot_send_command(uint16_t command)
-{
-    if (command > 47 || !s_initialized) {
-        return false;
-    }
-
-    for (int m = 0; m < 4; ++m) {
-        if (!dshot_send_raw_packet((uint8_t)m, command, true)) {
-            return false;
-        }
-    }
-    return true;
+    return dshot_send_stop_frames(5, 20);
 }

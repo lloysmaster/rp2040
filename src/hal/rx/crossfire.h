@@ -17,8 +17,7 @@ typedef struct {
 void crsf_init(void);
 
 // Función principal que debe ser llamada frecuentemente para procesar el búfer DMA
-// Retorna true si se decodificó un paquete válido nuevo
-bool crsf_update(void);
+void crsf_update(void);
 
 // Retorna un puntero a los datos de los canales
 const crsf_data_t* crsf_get_data(void);
