@@ -5,15 +5,6 @@
 #include "hardware/spi.h"
 #include "math/fixed_point.h"
 
-// Direcciones de registros clave (MPU6500)
-#define MPU_REG_ACCEL_XOUT_H  0x3B
-#define MPU_REG_GYRO_XOUT_H  0x43
-#define MPU_REG_INT_PIN_CFG   0x37
-#define MPU_REG_INT_ENABLE    0x38
-#define MPU_REG_GYRO_CONFIG   0x1B
-#define MPU_REG_PWR_MGMT_1    0x6B
-#define MPU_REG_WHO_AM_I      0x75
-
 // Estructura de configuración
 typedef struct {
     spi_inst_t *spi;
@@ -29,23 +20,7 @@ typedef struct {
  * @brief Inicializa el hardware SPI, reserva los canales DMA y configura el MPU6500.
  * @param config Puntero a la estructura de configuración.
  */
-void mpu_init(mpu_config_t *config);
-
-/**
- * @brief Escribe un byte en un registro específico (Bloqueante estándar para configuración).
- */
-void mpu_write(uint8_t reg, uint8_t data);
-
-/**
- * @brief Lee varios bytes desde un registro utilizando canales DMA TX y RX en paralelo.
- */
-void mpu_read(uint8_t reg, uint8_t *buf, uint8_t len);
-
-/**
- * @brief Lee los 3 ejes del acelerómetro usando DMA y los convierte a Q16_16.
- * @param output Arreglo de 3 elementos q16_16.
- */
-void mpu_read_accel_fixed(q16_16 *output);
+void mpu_init(const mpu_config_t *config);
 
 /**
  * @brief Lee los 3 ejes del giroscopio usando DMA y los convierte a Q16_16.

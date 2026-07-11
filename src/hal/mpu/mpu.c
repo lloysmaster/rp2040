@@ -3,12 +3,20 @@
 #include "hardware/dma.h"
 #include "math/fixed_point.h"
 
-static mpu_config_t *g_cfg;
+#define MPU_REG_GYRO_XOUT_H 0x43
+#define MPU_REG_INT_ENABLE 0x38
+#define MPU_REG_GYRO_CONFIG 0x1B
+#define MPU_REG_PWR_MGMT_1 0x6B
+
+static const mpu_config_t *g_cfg;
 
 // Canales DMA estáticos para el módulo MPU
 static int dma_tx_chan = -1;
 static int dma_rx_chan = -1;
 static uint8_t dma_dummy_byte = 0x00;
+
+static void mpu_write(uint8_t reg, uint8_t data);
+static void mpu_read(uint8_t reg, uint8_t *buf, uint8_t len);
 
 static uint8_t mpu_gyro_fs_bits_from_sensitivity(uint16_t sensitivity_lsb_per_dps) {
     if (sensitivity_lsb_per_dps >= 131) {
@@ -23,7 +31,7 @@ static uint8_t mpu_gyro_fs_bits_from_sensitivity(uint16_t sensitivity_lsb_per_dp
     return 0x18; // ±2000 °/s -> 16.4 LSB/(°/s)
 }
 
-void mpu_init(mpu_config_t *config) {
+void mpu_init(const mpu_config_t *config) {
     g_cfg = config;
 
     // Configurar SPI a 1MHz para inicialización segura
@@ -53,14 +61,14 @@ void mpu_init(mpu_config_t *config) {
     mpu_write(MPU_REG_GYRO_CONFIG, mpu_gyro_fs_bits_from_sensitivity(sensitivity));
 }
 
-void mpu_write(uint8_t reg, uint8_t data) {
+static void mpu_write(uint8_t reg, uint8_t data) {
     uint8_t buf[2] = { (uint8_t)(reg & 0x7F), data }; // MSB 0 para escritura
     gpio_put(g_cfg->pin_cs, 0);
     spi_write_blocking(g_cfg->spi, buf, 2);
     gpio_put(g_cfg->pin_cs, 1);
 }
 
-void mpu_read(uint8_t reg, uint8_t *buf, uint8_t len) {
+static void mpu_read(uint8_t reg, uint8_t *buf, uint8_t len) {
     uint8_t addr = reg | 0x80; // MSB 1 para lectura
     
     gpio_put(g_cfg->pin_cs, 0);
@@ -111,20 +119,6 @@ void mpu_read(uint8_t reg, uint8_t *buf, uint8_t len) {
     dma_channel_wait_for_finish_blocking(dma_rx_chan);
 
     gpio_put(g_cfg->pin_cs, 1);
-}
-
-void mpu_read_accel_fixed(q16_16 *output) {
-    uint8_t raw[6];
-    mpu_read(MPU_REG_ACCEL_XOUT_H, raw, 6); // Lectura por DMA
-
-    int16_t ax = (raw[0] << 8) | raw[1];
-    int16_t ay = (raw[2] << 8) | raw[3];
-    int16_t az = (raw[4] << 8) | raw[5];
-
-    // Escala de 2g (16384 LSB/g)
-    output[0] = q_div(TO_Q16(ax), TO_Q16(16384));
-    output[1] = q_div(TO_Q16(ay), TO_Q16(16384));
-    output[2] = q_div(TO_Q16(az), TO_Q16(16384));
 }
 
 void mpu_read_gyro_fixed(q16_16 *output) {

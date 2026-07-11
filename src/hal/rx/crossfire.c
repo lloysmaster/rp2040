@@ -14,7 +14,7 @@
 #define CRSF_FAILSAFE_TIMEOUT_US 200000u
 
 // Búfer circular alineado a 256 bytes (requerimiento del DMA de la RP2040 para wrap_ring)
-uint8_t __attribute__((aligned(256))) crsf_rx_buffer[256];
+static uint8_t __attribute__((aligned(256))) crsf_rx_buffer[256];
 static int dma_chan;
 static uint8_t read_idx = 0;
 
@@ -34,7 +34,7 @@ static uint8_t expected_len = 0;
 static crsf_data_t crsf_state;
 
 // Cálculo estándar de CRC8 para protocolo CRSF (Polinomio 0xD5)
-static uint8_t calc_crc8(uint8_t *data, uint8_t len) {
+static uint8_t calc_crc8(const uint8_t *data, uint8_t len) {
     uint8_t crc = 0;
     for (uint8_t i = 0; i < len; i++) {
         crc ^= data[i];
@@ -50,7 +50,7 @@ static uint8_t calc_crc8(uint8_t *data, uint8_t len) {
 }
 
 // Desempaqueta los 22 bytes en 16 canales de 11 bits
-static void decode_rc_channels(uint8_t *payload) {
+static void decode_rc_channels(const uint8_t *payload) {
     crsf_state.channels[0]  = (payload[0]       | payload[1] << 8) & 0x07FF;
     crsf_state.channels[1]  = (payload[1] >> 3  | payload[2] << 5) & 0x07FF;
     crsf_state.channels[2]  = (payload[2] >> 6  | payload[3] << 2 | payload[4] << 10) & 0x07FF;
@@ -101,16 +101,12 @@ void crsf_init(void) {
     );
 }
 
-bool crsf_update(void) {
-    bool new_data_ready = false;
-
+void crsf_update(void) {
     if (crsf_state.is_connected && (time_us_32() - crsf_state.last_packet_time) > CRSF_FAILSAFE_TIMEOUT_US) {
         crsf_state.is_connected = false;
         for (int i = 0; i < CRSF_MAX_CHANNELS; ++i) {
             crsf_state.channels[i] = 0;
         }
-        crsf_state.channels[2] = 0;
-        crsf_state.channels[4] = 0;
     }
     
     // Calcular dónde está escribiendo el DMA ahora mismo (dirección relativa al inicio del búfer)
@@ -161,7 +157,6 @@ bool crsf_update(void) {
                         // Si el tipo de paquete es de canales RC, decodificamos
                         if (payload_buffer[0] == CRSF_RC_CHANNELS_TYPE && (expected_len - 2) == CRSF_PAYLOAD_SIZE) {
                             decode_rc_channels(&payload_buffer[1]); // Pasar puntero saltando el byte Type
-                            new_data_ready = true;
                         }
                     }
                     current_state = CRSF_STATE_SYNC; // Reiniciar siempre al final de la trama
@@ -170,7 +165,6 @@ bool crsf_update(void) {
         }
     }
     
-    return new_data_ready;
 }
 
 const crsf_data_t* crsf_get_data(void) {
