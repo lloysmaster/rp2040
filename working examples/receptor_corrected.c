@@ -86,7 +86,8 @@ void enviarTramaCRSF() {
       bits_available -= 8;
     }
   }
-  frame[25] = crsf_crc8(&frame[1], 24);
+  // El CRC cubre tipo + payload (no el sync ni el byte de largo)
+  frame[25] = crsf_crc8(&frame[2], 23);
   Serial2.write(frame, 26);
 }
 
