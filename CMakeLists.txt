@@ -25,6 +25,21 @@ endif()
 # ====================================================================================
 set(PICO_BOARD pico CACHE STRING "Board type")
 
+# Prefer an existing local SDK installation if present; otherwise fall back to
+# fetching a copy into the project. This avoids CMake add_subdirectory errors
+# when the fetched copy references files outside the expected source tree.
+set(local_pico_sdk_path "${USERHOME}/.pico-sdk/sdk/${sdkVersion}")
+if(EXISTS ${local_pico_sdk_path})
+    message(STATUS "Using local Pico SDK at ${local_pico_sdk_path}")
+    set(PICO_SDK_FETCH_FROM_GIT OFF CACHE BOOL "Fetch Pico SDK from GitHub if no local SDK is available" FORCE)
+    set(PICO_SDK_PATH "${local_pico_sdk_path}" CACHE PATH "Path to the Raspberry Pi Pico SDK" FORCE)
+else()
+    set(PICO_SDK_FETCH_FROM_GIT ON CACHE BOOL "Fetch Pico SDK from GitHub if no local SDK is available" FORCE)
+    set(PICO_SDK_FETCH_FROM_GIT_PATH "${CMAKE_CURRENT_LIST_DIR}/.pico-sdk" CACHE FILEPATH "Location for the Pico SDK checkout" FORCE)
+    set(PICO_SDK_FETCH_FROM_GIT_TAG "${sdkVersion}" CACHE STRING "Pico SDK tag" FORCE)
+    unset(ENV{PICO_SDK_PATH})
+    set(PICO_SDK_PATH "" CACHE PATH "Path to the Raspberry Pi Pico SDK" FORCE)
+endif()
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
 

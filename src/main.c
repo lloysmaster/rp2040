@@ -28,9 +28,10 @@ void gpio_callback(uint gpio, uint32_t events) {
 }
 
 int main() {
-    
-
-
+    // --- Inicialización de stdio para Debug (USB/UART) ---
+    stdio_init_all();
+    sleep_ms(2000); // Pausa breve para permitir la conexión del monitor serie
+    printf("[DEBUG] Sistema iniciando...\n");
 
     // --- Inicialización del sensor MPU6500 ---
     mpu_config_t cfg = {
@@ -44,12 +45,13 @@ int main() {
     };
     
     mpu_init(&cfg);
+    printf("[DEBUG] MPU6500 inicializado\n");
     mpu_enable_drdy();
     
     // Habilitar interrupción física en el flanco de subida del pin DRDY
     gpio_set_irq_enabled_with_callback(14, GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
 
-    // --- Inicialización del receptor Crossfire ---
+    // --- Inicialización de periféricos ---
     crsf_init();
     gps_init();
     battery_init();
@@ -58,11 +60,11 @@ int main() {
     attitude_set_mode(FLIGHT_MODE_ACRO);
     mixer_init();
     dshot_init(MOTOR_BASE_PIN);
-        for (int i = 0; i < 4; ++i) {
-            dshot_set_throttle(i, 0);
-        }
-
     
+    for (int i = 0; i < 4; ++i) {
+        dshot_set_throttle(i, 0);
+    }
+    printf("[DEBUG] Periféricos y motores inicializados\n");
 
     uint32_t last_loop_us = time_us_32();
     static bool esc_armed = false;
@@ -70,12 +72,14 @@ int main() {
     static mixer_output_t last_motor_cmd = {0};
     uint16_t esc_throttle[4] = {0, 0, 0, 0};
 
+    // Variables para control de frecuencia de impresión de debug
+    uint32_t last_debug_print_us = 0;
+
     while (true) {
         // 1. Procesar datos del receptor Crossfire (No bloqueante)
         const crsf_data_t* rc_data = crsf_get_data();
         if (crsf_update()) {
             // CRSF entrega valores entre ~172 y ~1811 (centro en 992)
-            
         }
 
         // 2. Procesar datos del MPU (Acelerómetro y Giroscopio)
@@ -108,7 +112,7 @@ int main() {
             if (esc_armed) {
                 if (dshot_disarm()) {
                     esc_armed = false;
-                    
+                    printf("[DEBUG] RC Desconectado: Motores desarmados por seguridad\n");
                 }
             }
             for (int i = 0; i < 4; ++i) {
@@ -122,7 +126,7 @@ int main() {
                 if (arm_switch && throttle_low) {
                     if (dshot_arm()) {
                         esc_armed = true;
-                        
+                        printf("[DEBUG] ¡Motores ARMADOS!\n");
                     }
                 }
                 for (int i = 0; i < 4; ++i) dshot_set_throttle(i, 0);
@@ -130,7 +134,7 @@ int main() {
                 if (!arm_switch) {
                     if (dshot_disarm()) {
                         esc_armed = false;
-                        
+                        printf("[DEBUG] Motores DESARMADOS por interruptor\n");
                     }
                     for (int i = 0; i < 4; ++i) dshot_set_throttle(i, 0);
                 } else {
@@ -145,9 +149,16 @@ int main() {
             }
         }
 
-        
-
-        
+        // --- Impresión periódica de Debug (cada 200 ms aprox para no saturar) ---
+        uint32_t current_time = time_us_32();
+        if (current_time - last_debug_print_us > 200000) {
+            last_debug_print_us = current_time;
+            printf("[DEBUG] RC Connected: %d | Armed: %d | Throttle CH: %d | Arm CH: %d\n",
+                   rc_data->is_connected,
+                   esc_armed,
+                   rc_data->channels[2],
+                   rc_data->channels[4]);
+        }
 
         // 3. Telemetría: GPS y batería se muestrean y se reenvían por CRSF al receptor
         gps_update();
