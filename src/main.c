@@ -4,6 +4,7 @@
 
 // Asegúrate de que las rutas a los headers coincidan con la estructura de tus carpetas
 #include "hal/mpu/mpu.h"
+
 #include "hal/rx/crossfire.h" 
 #include "math/fixed_point.h"
 #include "core/attitude.h"
@@ -11,8 +12,7 @@
 #include "hal/esc/dshot.h"
 #include "config/pinout.h"
 
-#define ARM_THRESHOLD 250
-#define DISARM_THRESHOLD 180
+
 #define SAFE_ARMED_IDLE_THROTTLE DSHOT_MIN_THROTTLE
 
 volatile bool data_ready = false;
