@@ -10,6 +10,9 @@
 #include "core/attitude.h"
 #include "control/mixer.h"
 #include "hal/esc/dshot.h"
+#include "hal/gps/gps.h"
+#include "hal/battery/battery.h"
+#include "telemetry/telemetry.h"
 #include "config/pinout.h"
 
 
@@ -48,6 +51,9 @@ int main() {
 
     // --- Inicialización del receptor Crossfire ---
     crsf_init();
+    gps_init();
+    battery_init();
+    telemetry_init();
     attitude_init();
     attitude_set_mode(FLIGHT_MODE_ACRO);
     mixer_init();
@@ -82,6 +88,7 @@ int main() {
             q16_16 gyro_data[3];
             mpu_read_gyro_fixed(gyro_data);   // Ejecutado internamente bajo DMA
 
+            attitude_estimate(accel_data, gyro_data, 0.005f);
             attitude_update(rc_data, gyro_data, &last_attitude_cmd);
             mixer_mix(&last_attitude_cmd, &last_motor_cmd);
         }
@@ -141,6 +148,12 @@ int main() {
         
 
         
+
+        // 3. Telemetría: GPS y batería se muestrean y se reenvían por CRSF al receptor
+        gps_update();
+        battery_update();
+        telemetry_set_armed(esc_armed);
+        telemetry_update();
 
         uint32_t now_us = time_us_32();
         uint32_t loop_dt_us = now_us - last_loop_us;
