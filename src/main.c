@@ -53,6 +53,7 @@ int main() {
 
     // --- Inicialización de periféricos ---
     crsf_init();
+    printf("[DEBUG] CRSF loopback self-test: %s\n", crsf_self_test() ? "OK" : "FALLO");
     gps_init();
     battery_init();
     telemetry_init();
@@ -161,13 +162,14 @@ int main() {
 
             crsf_debug_t dbg;
             crsf_get_debug(&dbg);
-            printf("[DEBUG] CRSF bytes: %lu | OK: %lu | CRC err: %lu | Len err: %lu | UART err: 0x%lX | Ultimos: "
+            printf("[DEBUG] CRSF bytes: %lu | OK: %lu | CRC err: %lu | Len err: %lu | UART err: 0x%lX | RX pin: %d | Ultimos: "
                    "%02X %02X %02X %02X %02X %02X %02X %02X\n",
                    (unsigned long)dbg.bytes_rx,
                    (unsigned long)dbg.frames_ok,
                    (unsigned long)dbg.frames_crc_err,
                    (unsigned long)dbg.frames_len_err,
                    (unsigned long)dbg.uart_errors,
+                   dbg.rx_pin_level,
                    dbg.last_bytes[0], dbg.last_bytes[1], dbg.last_bytes[2], dbg.last_bytes[3],
                    dbg.last_bytes[4], dbg.last_bytes[5], dbg.last_bytes[6], dbg.last_bytes[7]);
         }

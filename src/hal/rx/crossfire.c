@@ -48,11 +48,17 @@ static void debug_push_byte(uint8_t ch) {
     debug_byte_idx = (uint8_t)((debug_byte_idx + 1) % sizeof(crsf_debug.last_bytes));
 }
 
+static void debug_reset(void) {
+    crsf_debug = (crsf_debug_t){0};
+    debug_byte_idx = 0;
+}
+
 void crsf_get_debug(crsf_debug_t *out) {
     if (out == NULL) {
         return;
     }
     *out = crsf_debug;
+    out->rx_pin_level = gpio_get(UART_RX_PIN);
     // Reordenar el anillo para que quede del más antiguo al más nuevo
     for (uint8_t i = 0; i < sizeof(out->last_bytes); ++i) {
         out->last_bytes[i] = crsf_debug.last_bytes[(debug_byte_idx + i) % sizeof(crsf_debug.last_bytes)];
@@ -144,6 +150,50 @@ void crsf_init(void) {
         0,
         false                         // No arrancar todavía
     );
+}
+
+bool crsf_self_test(void) {
+    // Loopback interno del PL011: TX se conecta a RX dentro del chip, así que
+    // esta prueba valida UART + DMA + parser sin depender de ningún cable.
+    hw_set_bits(&uart_get_hw(UART_ID)->cr, UART_UARTCR_LBE_BITS);
+
+    // Trama RC válida con los 16 canales en el centro (992 = 0x3E0)
+    uint8_t frame[26];
+    frame[0] = CRSF_SYNC_BYTE;
+    frame[1] = CRSF_PAYLOAD_SIZE + 2;
+    frame[2] = CRSF_RC_CHANNELS_TYPE;
+
+    uint32_t bits = 0;
+    uint8_t bits_available = 0;
+    uint8_t idx = 3;
+    for (uint8_t i = 0; i < CRSF_MAX_CHANNELS; ++i) {
+        bits |= (uint32_t)992u << bits_available;
+        bits_available += 11;
+        while (bits_available >= 8) {
+            frame[idx++] = (uint8_t)(bits & 0xFF);
+            bits >>= 8;
+            bits_available -= 8;
+        }
+    }
+    frame[25] = calc_crc8(&frame[2], 23);
+
+    uart_write_blocking(UART_ID, frame, sizeof(frame));
+    sleep_ms(5); // Tiempo para que el DMA vuelque los bytes al búfer circular
+
+    const bool ok = crsf_update();
+
+    hw_clear_bits(&uart_get_hw(UART_ID)->cr, UART_UARTCR_LBE_BITS);
+
+    // La prueba no debe dejar rastros en el estado del receptor
+    current_state = CRSF_STATE_SYNC;
+    payload_idx = 0;
+    crsf_state.is_connected = false;
+    for (uint8_t i = 0; i < CRSF_MAX_CHANNELS; ++i) {
+        crsf_state.channels[i] = 0;
+    }
+    debug_reset();
+
+    return ok;
 }
 
 // --- Telemetría: construcción y encolado de tramas --------------------------
