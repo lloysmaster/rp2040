@@ -2,6 +2,7 @@
 #include "pico/stdlib.h"
 #include "hardware/uart.h"
 #include "hardware/dma.h"
+#include <string.h>
 
 #define UART_ID uart0
 #define BAUD_RATE 420000 
@@ -17,6 +18,12 @@
 uint8_t __attribute__((aligned(256))) crsf_rx_buffer[256];
 static int dma_chan;
 static uint8_t read_idx = 0;
+
+// Cola circular de transmisión de telemetría (vaciada por DMA hacia el UART)
+static uint8_t __attribute__((aligned(256))) crsf_tx_buffer[256];
+static int dma_tx_chan;
+static volatile uint8_t tx_head = 0; // siguiente posición a escribir
+static uint8_t tx_tail = 0;          // siguiente posición a transmitir
 
 typedef enum {
     CRSF_STATE_SYNC,
@@ -99,6 +106,159 @@ void crsf_init(void) {
         0xFFFFFFFF,                   // Transferencias (infinito en la práctica)
         true                          // Iniciar ya
     );
+
+    // Canal DMA de transmisión: lee del búfer circular y escribe en el UART
+    dma_tx_chan = dma_claim_unused_channel(true);
+    dma_channel_config tc = dma_channel_get_default_config(dma_tx_chan);
+
+    channel_config_set_transfer_data_size(&tc, DMA_SIZE_8);
+    channel_config_set_read_increment(&tc, true);
+    channel_config_set_write_increment(&tc, false);
+    channel_config_set_ring(&tc, false, 8);       // El puntero de lectura envuelve cada 256 bytes
+    channel_config_set_dreq(&tc, DREQ_UART0_TX);
+
+    dma_channel_configure(
+        dma_tx_chan,
+        &tc,
+        &uart_get_hw(UART_ID)->dr,    // Destino
+        crsf_tx_buffer,               // Origen (se reajusta en cada envío)
+        0,
+        false                         // No arrancar todavía
+    );
+}
+
+// --- Telemetría: construcción y encolado de tramas --------------------------
+
+// Posición realmente consumida: mientras el DMA transmite, sus bytes pendientes
+// no pueden sobrescribirse, así que se consulta su puntero de lectura.
+static uint8_t tx_consumed_idx(void) {
+    if (dma_channel_is_busy(dma_tx_chan)) {
+        const uint32_t read_addr = (uint32_t)dma_channel_hw_addr(dma_tx_chan)->read_addr;
+        return (uint8_t)(read_addr - (uint32_t)crsf_tx_buffer);
+    }
+    return tx_tail;
+}
+
+static uint8_t tx_free_space(void) {
+    // Se deja 1 byte libre para poder distinguir cola llena de cola vacía
+    return (uint8_t)(255u - (uint8_t)(tx_head - tx_consumed_idx()));
+}
+
+// Encola una trama CRSF completa: [dirección][largo][tipo][payload][crc]
+static bool crsf_enqueue_frame(uint8_t type, const uint8_t *payload, uint8_t payload_len) {
+    const uint8_t frame_len = (uint8_t)(payload_len + 4); // dir + len + tipo + payload + crc
+    if (payload_len > 60 || tx_free_space() < frame_len) {
+        return false; // Telemetría es best-effort: si no entra, se descarta
+    }
+
+    uint8_t crc_input[62];
+    crc_input[0] = type;
+    memcpy(&crc_input[1], payload, payload_len);
+    const uint8_t crc = calc_crc8(crc_input, (uint8_t)(payload_len + 1));
+
+    uint8_t head = tx_head;
+    crsf_tx_buffer[head++] = CRSF_ADDR_FLIGHT_CONTROLLER;
+    crsf_tx_buffer[head++] = (uint8_t)(payload_len + 2); // tipo + payload + crc
+    crsf_tx_buffer[head++] = type;
+    for (uint8_t i = 0; i < payload_len; ++i) {
+        crsf_tx_buffer[head++] = payload[i];
+    }
+    crsf_tx_buffer[head++] = crc;
+    tx_head = head;
+
+    crsf_tx_pump();
+    return true;
+}
+
+void crsf_tx_pump(void) {
+    if (dma_channel_is_busy(dma_tx_chan)) {
+        return;
+    }
+
+    const uint8_t pending = (uint8_t)(tx_head - tx_tail);
+    if (pending == 0) {
+        return;
+    }
+
+    dma_channel_set_read_addr(dma_tx_chan, &crsf_tx_buffer[tx_tail], false);
+    dma_channel_set_trans_count(dma_tx_chan, pending, true);
+    tx_tail = (uint8_t)(tx_tail + pending);
+}
+
+bool crsf_send_battery(uint16_t voltage_dv, uint16_t current_da, uint32_t capacity_mah, uint8_t remaining_pct) {
+    uint8_t payload[8];
+    payload[0] = (uint8_t)(voltage_dv >> 8);
+    payload[1] = (uint8_t)(voltage_dv & 0xFF);
+    payload[2] = (uint8_t)(current_da >> 8);
+    payload[3] = (uint8_t)(current_da & 0xFF);
+    payload[4] = (uint8_t)((capacity_mah >> 16) & 0xFF);
+    payload[5] = (uint8_t)((capacity_mah >> 8) & 0xFF);
+    payload[6] = (uint8_t)(capacity_mah & 0xFF);
+    payload[7] = remaining_pct > 100u ? 100u : remaining_pct;
+    return crsf_enqueue_frame(CRSF_FRAME_BATTERY_SENSOR, payload, sizeof(payload));
+}
+
+bool crsf_send_gps(int32_t latitude_1e7, int32_t longitude_1e7, uint16_t groundspeed_kmh_x10,
+                   uint16_t heading_deg_x100, int16_t altitude_m, uint8_t satellites) {
+    // El campo de altitud viaja con un offset de +1000 m (0 => -1000 m)
+    int32_t altitude_field = (int32_t)altitude_m + 1000;
+    if (altitude_field < 0) altitude_field = 0;
+    if (altitude_field > 0xFFFF) altitude_field = 0xFFFF;
+
+    uint8_t payload[15];
+    payload[0]  = (uint8_t)((latitude_1e7 >> 24) & 0xFF);
+    payload[1]  = (uint8_t)((latitude_1e7 >> 16) & 0xFF);
+    payload[2]  = (uint8_t)((latitude_1e7 >> 8) & 0xFF);
+    payload[3]  = (uint8_t)(latitude_1e7 & 0xFF);
+    payload[4]  = (uint8_t)((longitude_1e7 >> 24) & 0xFF);
+    payload[5]  = (uint8_t)((longitude_1e7 >> 16) & 0xFF);
+    payload[6]  = (uint8_t)((longitude_1e7 >> 8) & 0xFF);
+    payload[7]  = (uint8_t)(longitude_1e7 & 0xFF);
+    payload[8]  = (uint8_t)(groundspeed_kmh_x10 >> 8);
+    payload[9]  = (uint8_t)(groundspeed_kmh_x10 & 0xFF);
+    payload[10] = (uint8_t)(heading_deg_x100 >> 8);
+    payload[11] = (uint8_t)(heading_deg_x100 & 0xFF);
+    payload[12] = (uint8_t)(((uint32_t)altitude_field >> 8) & 0xFF);
+    payload[13] = (uint8_t)((uint32_t)altitude_field & 0xFF);
+    payload[14] = satellites;
+    return crsf_enqueue_frame(CRSF_FRAME_GPS, payload, sizeof(payload));
+}
+
+static int16_t rad_to_crsf(float radians) {
+    float scaled = radians * 10000.0f;
+    if (scaled > 32767.0f) scaled = 32767.0f;
+    if (scaled < -32768.0f) scaled = -32768.0f;
+    return (int16_t)scaled;
+}
+
+bool crsf_send_attitude(float pitch_rad, float roll_rad, float yaw_rad) {
+    const int16_t pitch = rad_to_crsf(pitch_rad);
+    const int16_t roll  = rad_to_crsf(roll_rad);
+    const int16_t yaw   = rad_to_crsf(yaw_rad);
+
+    uint8_t payload[6];
+    payload[0] = (uint8_t)(((uint16_t)pitch >> 8) & 0xFF);
+    payload[1] = (uint8_t)((uint16_t)pitch & 0xFF);
+    payload[2] = (uint8_t)(((uint16_t)roll >> 8) & 0xFF);
+    payload[3] = (uint8_t)((uint16_t)roll & 0xFF);
+    payload[4] = (uint8_t)(((uint16_t)yaw >> 8) & 0xFF);
+    payload[5] = (uint8_t)((uint16_t)yaw & 0xFF);
+    return crsf_enqueue_frame(CRSF_FRAME_ATTITUDE, payload, sizeof(payload));
+}
+
+bool crsf_send_flight_mode(const char *mode) {
+    if (mode == NULL) {
+        return false;
+    }
+
+    uint8_t payload[16];
+    uint8_t len = 0;
+    while (len < (sizeof(payload) - 1) && mode[len] != '\0') {
+        payload[len] = (uint8_t)mode[len];
+        ++len;
+    }
+    payload[len++] = '\0'; // La cadena viaja terminada en nulo
+    return crsf_enqueue_frame(CRSF_FRAME_FLIGHT_MODE, payload, len);
 }
 
 bool crsf_update(void) {

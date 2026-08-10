@@ -1,4 +1,5 @@
 #include <stddef.h>
+#include <math.h>
 #include "attitude.h"
 #include "control/pid.h"
 #include "control/mixer.h"
@@ -14,6 +15,15 @@ static pid_t yaw_pid;
 static bool attitude_ready = false;
 static flight_mode_t current_mode = FLIGHT_MODE_STABILIZED;
 static filter_state_t filter_state;
+
+// Ángulos estimados en radianes (referencia para la telemetría)
+static float angle_roll = 0.0f;
+static float angle_pitch = 0.0f;
+static float angle_yaw = 0.0f;
+
+#define DEG_TO_RAD 0.01745329252f
+#define ATTITUDE_COMPLEMENTARY_ALPHA 0.98f
+#define PI_F 3.14159265359f
 
 static float q16_to_float(q16_16 value) {
     return (float)value / 65536.0f;
@@ -69,11 +79,59 @@ void attitude_init(void) {
     for (int i = 0; i < 3; ++i) {
         filter_state.prev_filtered[i] = 0.0f;
     }
+    angle_roll = 0.0f;
+    angle_pitch = 0.0f;
+    angle_yaw = 0.0f;
     attitude_ready = true;
 }
 
 void attitude_set_mode(flight_mode_t mode) {
     current_mode = mode;
+}
+
+flight_mode_t attitude_get_mode(void) {
+    return current_mode;
+}
+
+void attitude_estimate(const q16_16 accel[3], const q16_16 gyro[3], float dt_s) {
+    if (accel == NULL || gyro == NULL || dt_s <= 0.0f) {
+        return;
+    }
+
+    const float ax = q16_to_float(accel[0]);
+    const float ay = q16_to_float(accel[1]);
+    const float az = q16_to_float(accel[2]);
+
+    const float roll_rate = q16_to_float(gyro[0]) * DEG_TO_RAD;
+    const float pitch_rate = q16_to_float(gyro[1]) * DEG_TO_RAD;
+    const float yaw_rate = q16_to_float(gyro[2]) * DEG_TO_RAD;
+
+    // Predicción por integración del giroscopio
+    float roll = angle_roll + roll_rate * dt_s;
+    float pitch = angle_pitch + pitch_rate * dt_s;
+    angle_yaw += yaw_rate * dt_s;
+
+    // Corrección con el acelerómetro solo si el módulo está cerca de 1 g
+    const float accel_magnitude = sqrtf(ax * ax + ay * ay + az * az);
+    if (accel_magnitude > 0.7f && accel_magnitude < 1.3f) {
+        const float roll_acc = atan2f(ay, az);
+        const float pitch_acc = atan2f(-ax, sqrtf(ay * ay + az * az));
+        roll = ATTITUDE_COMPLEMENTARY_ALPHA * roll + (1.0f - ATTITUDE_COMPLEMENTARY_ALPHA) * roll_acc;
+        pitch = ATTITUDE_COMPLEMENTARY_ALPHA * pitch + (1.0f - ATTITUDE_COMPLEMENTARY_ALPHA) * pitch_acc;
+    }
+
+    angle_roll = roll;
+    angle_pitch = pitch;
+
+    // El yaw se integra sin referencia absoluta: se normaliza a [-pi, pi]
+    while (angle_yaw > PI_F) angle_yaw -= 2.0f * PI_F;
+    while (angle_yaw < -PI_F) angle_yaw += 2.0f * PI_F;
+}
+
+void attitude_get_angles(float *roll_rad, float *pitch_rad, float *yaw_rad) {
+    if (roll_rad != NULL) *roll_rad = angle_roll;
+    if (pitch_rad != NULL) *pitch_rad = angle_pitch;
+    if (yaw_rad != NULL) *yaw_rad = angle_yaw;
 }
 
 void attitude_update(const crsf_data_t *rc_data, const q16_16 gyro[3], attitude_cmd_t *output) {
