@@ -29,6 +29,7 @@ typedef struct {
     uint32_t frames_len_err;// bytes de largo fuera de rango (desincronización)
     uint32_t uart_errors;   // flags acumulados del UART (overrun/break/paridad/framing)
     uint8_t last_bytes[8];  // últimos bytes recibidos, del más antiguo al más nuevo
+    bool rx_pin_level;      // nivel actual del pin RX: en reposo debe ser alto
 } crsf_debug_t;
 
 // Inicializa el hardware (UART + DMA RX/TX) para CRSF
@@ -36,6 +37,12 @@ void crsf_init(void);
 
 // Copia los contadores de diagnóstico acumulados desde el arranque
 void crsf_get_debug(crsf_debug_t *out);
+
+// Autotest por loopback interno del UART: no requiere cableado alguno.
+// Retorna true si una trama de canales generada por el propio FC vuelve a
+// entrar y se decodifica; false apunta a un problema de UART/DMA/parser.
+// Deja los contadores de diagnóstico y el estado del receptor en cero.
+bool crsf_self_test(void);
 
 // Función principal que debe ser llamada frecuentemente para procesar el búfer DMA
 // Retorna true si se decodificó un paquete válido nuevo
