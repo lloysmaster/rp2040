@@ -1,36 +1,74 @@
 #include <esp_now.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
+#include "BluetoothSerial.h"
 
-const int joyXPin = 34;       // VRx del joystick principal (Roll)
-const int joyYPin = 35;       // VRy del joystick principal (Pitch)
+// Verificar si Bluetooth está habilitado en el ESP32
+#if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
+#error Bluetooth is not enabled! Run make menuconfig to and enable it
+#endif
 
-const int joy2XPin = 32;      // VRx del segundo stick (Yaw)
-const int joy2YPin = 33;      // VRy del segundo stick (Throttle)
+BluetoothSerial SerialBT;
 
-const int armSwitchPinLeft = 25;   // Lado izquierdo del switch de armado (CH4 -> 1000)
-const int armSwitchPinRight = 26;  // Lado derecho del switch de armado (CH4 -> 2000)
+const int joyXPin = 34;
+const int joyYPin = 35;
 
-// Mapeo de canales RC para este firmware:
-// CH0 -> Roll  (stick principal eje X)
-// CH1 -> Pitch (stick principal eje Y)
-// CH2 -> Throttle (segundo stick eje Y)
-// CH3 -> Yaw    (segundo stick eje X)
-// CH4 -> Arm/Disarm (switch con centro a GND y lados a GPIO)
+const int joy2XPin = 32;
+const int joy2YPin = 33;
 
-// ✅ Broadcast - Funciona sin necesidad de conocer la MAC del receptor
+const int armSwitchPinLeft = 25;
+const int armSwitchPinRight = 26;
+
+String currentLatitude = "-34.603722";
+String currentLongitude = "-58.381592";
+float pidKp = 1.0;
+float pidKi = 0.0;
+float pidKd = 0.0;
+
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-uint8_t crc8(const uint8_t *ptr, uint8_t len) {
-  uint8_t crc = 0;
-  for (uint8_t i = 0; i < len; i++) {
-    crc ^= *ptr++;
-    for (uint8_t j = 0; j < 8; j++) {
-      if (crc & 0x80) crc = (crc << 1) ^ 0xD5;
-      else crc <<= 1;
-    }
+// ===== Paquete de canales RC enviado por ESP-NOW (hacia el receptor) =====
+typedef struct __attribute__((packed)) {
+  uint8_t type;        // 0x01 = canales RC
+  uint16_t ch[16];
+} rc_packet_t;
+
+// ===== Paquete de telemetria recibido por ESP-NOW (desde el receptor) =====
+typedef struct __attribute__((packed)) {
+  uint8_t type;         // 0x02 = telemetria
+  float batteryVoltage;
+  float batteryCurrent;
+  uint32_t batteryCapacity;
+  uint8_t batteryRemaining;
+  float gpsLat;
+  float gpsLon;
+  float gpsSpeed;
+  float gpsHeading;
+  int16_t gpsAltitude;
+  uint8_t gpsSatellites;
+  float attitudePitch;
+  float attitudeRoll;
+  float attitudeYaw;
+  uint8_t linkRSSI1;
+  uint8_t linkRSSI2;
+  uint8_t linkQuality;
+  int8_t  linkSNR;
+  uint8_t linkTXPower;
+  char flightMode[16];
+} telemetry_packet_t;
+
+telemetry_packet_t telemetry = {0x02};
+volatile bool telemetryValid = false;
+unsigned long lastTelemetryRxMillis = 0;
+
+// ---------- ESP-NOW: recepcion de telemetria desde el receptor ----------
+void OnDataRecv(const esp_now_recv_info_t * info, const uint8_t *incoming_data, int len) {
+  if (len < 1) return;
+  if (incoming_data[0] == 0x02 && len == sizeof(telemetry_packet_t)) {
+    memcpy(&telemetry, incoming_data, sizeof(telemetry));
+    telemetryValid = true;
+    lastTelemetryRxMillis = millis();
   }
-  return crc;
 }
 
 uint16_t map_rc_channel(int raw) {
@@ -46,10 +84,102 @@ uint16_t read_arm_switch_channel() {
   return 1500;
 }
 
+void handleBluetoothCommands() {
+  if (SerialBT.available()) {
+    String command = SerialBT.readStringUntil('\n');
+    command.trim();
+
+    if (command == "get_home") {
+      SerialBT.print("home:");
+      SerialBT.print(currentLatitude);
+      SerialBT.print(",");
+      SerialBT.println(currentLongitude);
+    }
+    else if (command == "get_position") {
+      SerialBT.print("pos:");
+      SerialBT.print(currentLatitude);
+      SerialBT.print(",");
+      SerialBT.println(currentLongitude);
+    }
+    else if (command == "get_pid") {
+      SerialBT.print("pid:");
+      SerialBT.print(pidKp);
+      SerialBT.print(",");
+      SerialBT.print(pidKi);
+      SerialBT.print(",");
+      SerialBT.println(pidKd);
+    }
+    else if (command.startsWith("set_pid:")) {
+      int firstComma = command.indexOf(',', 8);
+      int secondComma = command.indexOf(',', firstComma + 1);
+      if (firstComma != -1 && secondComma != -1) {
+        pidKp = command.substring(8, firstComma).toFloat();
+        pidKi = command.substring(firstComma + 1, secondComma).toFloat();
+        pidKd = command.substring(secondComma + 1).toFloat();
+      }
+      SerialBT.print("pid:");
+      SerialBT.print(pidKp);
+      SerialBT.print(",");
+      SerialBT.print(pidKi);
+      SerialBT.print(",");
+      SerialBT.println(pidKd);
+    }
+    else if (command.startsWith("set_home:")) {
+      int commaIndex = command.indexOf(',', 9);
+      if (commaIndex != -1) {
+        currentLatitude = command.substring(9, commaIndex);
+        currentLongitude = command.substring(commaIndex + 1);
+      }
+      SerialBT.print("home:");
+      SerialBT.print(currentLatitude);
+      SerialBT.print(",");
+      SerialBT.println(currentLongitude);
+    }
+    else if (command == "get_telemetry") {
+      if (!telemetryValid) {
+        SerialBT.println("telemetry:sin_datos");
+      } else {
+        SerialBT.print("telemetry:");
+        SerialBT.print(telemetry.batteryVoltage);  SerialBT.print(",");
+        SerialBT.print(telemetry.batteryCurrent);  SerialBT.print(",");
+        SerialBT.print(telemetry.batteryRemaining); SerialBT.print(",");
+        SerialBT.print(telemetry.gpsLat, 7);  SerialBT.print(",");
+        SerialBT.print(telemetry.gpsLon, 7);  SerialBT.print(",");
+        SerialBT.print(telemetry.gpsSatellites); SerialBT.print(",");
+        SerialBT.print(telemetry.linkQuality); SerialBT.print(",");
+        SerialBT.print(telemetry.linkRSSI1); SerialBT.print(",");
+        SerialBT.println(telemetry.flightMode);
+      }
+    }
+    else if (command == "get_battery") {
+      SerialBT.print("battery:");
+      SerialBT.print(telemetry.batteryVoltage); SerialBT.print("V,");
+      SerialBT.print(telemetry.batteryCurrent); SerialBT.print("A,");
+      SerialBT.print(telemetry.batteryRemaining); SerialBT.println("%");
+    }
+    else if (command == "get_gps") {
+      SerialBT.print("gps:");
+      SerialBT.print(telemetry.gpsLat, 7); SerialBT.print(",");
+      SerialBT.print(telemetry.gpsLon, 7); SerialBT.print(",sats:");
+      SerialBT.println(telemetry.gpsSatellites);
+    }
+    else if (command == "get_link") {
+      SerialBT.print("link:LQ=");
+      SerialBT.print(telemetry.linkQuality); SerialBT.print("%,RSSI1=");
+      SerialBT.print(telemetry.linkRSSI1); SerialBT.print(",RSSI2=");
+      SerialBT.print(telemetry.linkRSSI2); SerialBT.print(",SNR=");
+      SerialBT.println(telemetry.linkSNR);
+    }
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   pinMode(armSwitchPinLeft, INPUT_PULLUP);
   pinMode(armSwitchPinRight, INPUT_PULLUP);
+
+  SerialBT.begin("PicoDrone-Control");
+  Serial.println("Bluetooth iniciado. Dispositivo visible como 'PicoDrone-Control'");
 
   // Debug: Mostrar MAC del emisor
   Serial.print("MAC del Emisor: ");
@@ -66,6 +196,8 @@ void setup() {
     return;
   }
 
+  esp_now_register_recv_cb(OnDataRecv);
+
   esp_now_peer_info_t peerInfo = {};
   memcpy(peerInfo.peer_addr, broadcastAddress, 6);
   peerInfo.channel = 1;
@@ -79,89 +211,32 @@ void setup() {
   Serial.println("ESP-NOW inicializado correctamente");
 }
 
+unsigned long lastSendTime = 0;
 void loop() {
-  uint16_t channels[16] = {0};
+  // 1. Revisar y atender comandos entrantes por Bluetooth (incluye pedidos de telemetria)
+  handleBluetoothCommands();
 
-  int rawX = analogRead(joyXPin);
-  int rawY = analogRead(joyYPin);
-  int raw2X = analogRead(joy2XPin);
-  int raw2Y = analogRead(joy2YPin);
-  uint16_t armSwitchValue = read_arm_switch_channel();
+  // 2. Lectura y envio normal de canales RC por ESP-NOW
+  if (millis() - lastSendTime >= 20) {
+    rc_packet_t packet;
+    packet.type = 0x01;
 
-  // Stick principal: Roll/Pitch
-  channels[0] = map_rc_channel(rawX);     // CH0 Roll
-  channels[1] = map_rc_channel(rawY);     // CH1 Pitch
+    int rawX = analogRead(joyXPin);
+    int rawY = analogRead(joyYPin);
+    int raw2X = analogRead(joy2XPin);
+    int raw2Y = analogRead(joy2YPin);
+    uint16_t armSwitchValue = read_arm_switch_channel();
 
-  // Segundo stick: Throttle/Yaw
-  channels[2] = map_rc_channel(raw2Y);  // CH2 Throttle (invertido para que subir suba el throttle)
-  channels[3] = map_rc_channel(raw2X);         // CH3 Yaw
+    packet.ch[0] = map_rc_channel(rawX);     // CH0 Roll
+    packet.ch[1] = map_rc_channel(rawY);     // CH1 Pitch
+    packet.ch[2] = map_rc_channel(raw2Y);    // CH2 Throttle
+    packet.ch[3] = map_rc_channel(raw2X);    // CH3 Yaw
+    packet.ch[4] = armSwitchValue;           // CH4 Arm/Disarm
+    for (int i = 5; i < 16; i++) {
+      packet.ch[i] = 992; // Resto - Centro
+    }
 
-  // Switch de armado
-  channels[4] = armSwitchValue;           // CH4 Arm/Disarm
-
-  for (int i = 5; i < 16; i++) {
-    channels[i] = 992;  // Resto - Centro
+    esp_now_send(broadcastAddress, (uint8_t*)&packet, sizeof(packet));
+    lastSendTime = millis();
   }
-
-  Serial.print("CH0:");
-  Serial.print(channels[0]);
-  Serial.print(" CH1:");
-  Serial.print(channels[1]);
-  Serial.print(" CH2:");
-  Serial.print(channels[2]);
-  Serial.print(" CH3:");
-  Serial.print(channels[3]);
-  Serial.print(" CH4:");
-  Serial.println(channels[4]);
-  Serial.print("Raw X:");
-  Serial.print(rawX);
-  Serial.print(" Raw Y:");
-  Serial.print(rawY);
-  Serial.print(" Raw 2Y:");
-  Serial.print(raw2Y);
-  Serial.print(" Raw 2X:");
-  Serial.println(raw2X);
-
-  uint8_t packet[26];
-  packet[0] = 0xC8;       // Sync
-  packet[1] = 24;         // Largo
-  packet[2] = 0x16;       // Tipo RC_CHANNELS_PACKED
-
-  uint8_t *p = &packet[3];
-  p[0] = (uint8_t)(channels[0] & 0xFF);
-  p[1] = (uint8_t)((channels[0] >> 8) | (channels[1] << 3));
-  p[2] = (uint8_t)((channels[1] >> 5) | (channels[2] << 6));
-  p[3] = (uint8_t)(channels[2] >> 2);
-  p[4] = (uint8_t)((channels[2] >> 10) | (channels[3] << 1));
-  p[5] = (uint8_t)((channels[3] >> 7) | (channels[4] << 4));
-  p[6] = (uint8_t)((channels[4] >> 4) | (channels[5] << 7));
-  p[7] = (uint8_t)(channels[5] >> 1);
-  p[8] = (uint8_t)((channels[5] >> 9) | (channels[6] << 2));
-  p[9] = (uint8_t)((channels[6] >> 6) | (channels[7] << 5));
-  p[10] = (uint8_t)(channels[7] >> 3);
-  p[11] = (uint8_t)((channels[8] & 0xFF));
-  p[12] = (uint8_t)((channels[8] >> 8) | (channels[9] << 3));
-  p[13] = (uint8_t)((channels[9] >> 5) | (channels[10] << 6));
-  p[14] = (uint8_t)(channels[10] >> 2);
-  p[15] = (uint8_t)((channels[10] >> 10) | (channels[11] << 1));
-  p[16] = (uint8_t)((channels[11] >> 7) | (channels[12] << 4));
-  p[17] = (uint8_t)((channels[12] >> 4) | (channels[13] << 7));
-  p[18] = (uint8_t)(channels[13] >> 1);
-  p[19] = (uint8_t)((channels[13] >> 9) | (channels[14] << 2));
-  p[20] = (uint8_t)((channels[14] >> 6) | (channels[15] << 5));
-  p[21] = (uint8_t)(channels[15] >> 3);
-
-  packet[25] = crc8(&packet[2], packet[1] - 1);
-
-  // Enviar por ESP-NOW
-  esp_err_t result = esp_now_send(broadcastAddress, packet, sizeof(packet));
-
-  if (result == ESP_OK) {
-    Serial.println("Trama enviada correctamente");
-  } else {
-    Serial.print("Error enviando: ");
-    Serial.println(result);
-  }
-
-  delay(20);
 }
