@@ -39,6 +39,25 @@ static uint8_t payload_idx = 0;
 static uint8_t expected_len = 0;
 
 static crsf_data_t crsf_state;
+static crsf_debug_t crsf_debug;
+static uint8_t debug_byte_idx = 0;
+
+static void debug_push_byte(uint8_t ch) {
+    crsf_debug.bytes_rx++;
+    crsf_debug.last_bytes[debug_byte_idx] = ch;
+    debug_byte_idx = (uint8_t)((debug_byte_idx + 1) % sizeof(crsf_debug.last_bytes));
+}
+
+void crsf_get_debug(crsf_debug_t *out) {
+    if (out == NULL) {
+        return;
+    }
+    *out = crsf_debug;
+    // Reordenar el anillo para que quede del más antiguo al más nuevo
+    for (uint8_t i = 0; i < sizeof(out->last_bytes); ++i) {
+        out->last_bytes[i] = crsf_debug.last_bytes[(debug_byte_idx + i) % sizeof(crsf_debug.last_bytes)];
+    }
+}
 
 // Cálculo estándar de CRC8 para protocolo CRSF (Polinomio 0xD5)
 static uint8_t calc_crc8(uint8_t *data, uint8_t len) {
@@ -264,6 +283,14 @@ bool crsf_send_flight_mode(const char *mode) {
 bool crsf_update(void) {
     bool new_data_ready = false;
 
+    // Errores de línea (overrun, framing, paridad, break): se leen y limpian.
+    // Un valor creciente delata baudios mal ajustados o ruido en el cable.
+    const uint32_t rsr = uart_get_hw(UART_ID)->rsr & 0x0Fu;
+    if (rsr != 0) {
+        crsf_debug.uart_errors |= rsr;
+        uart_get_hw(UART_ID)->rsr = 0;
+    }
+
     if (crsf_state.is_connected && (time_us_32() - crsf_state.last_packet_time) > CRSF_FAILSAFE_TIMEOUT_US) {
         crsf_state.is_connected = false;
         for (int i = 0; i < CRSF_MAX_CHANNELS; ++i) {
@@ -280,6 +307,7 @@ bool crsf_update(void) {
     // Procesar mientras haya datos nuevos en el ring buffer
     while (read_idx != write_idx) {
         uint8_t ch = crsf_rx_buffer[read_idx++]; // read_idx hace wrap automático gracias a ser uint8_t
+        debug_push_byte(ch);
         
         switch (current_state) {
             case CRSF_STATE_SYNC:
@@ -291,6 +319,7 @@ bool crsf_update(void) {
             case CRSF_STATE_LEN:
                 expected_len = ch;
                 if (expected_len > 64 || expected_len < 2) {
+                    crsf_debug.frames_len_err++;
                     current_state = CRSF_STATE_SYNC; // Longitud inválida, reiniciar
                 } else {
                     payload_idx = 0;
@@ -318,11 +347,14 @@ bool crsf_update(void) {
                     uint8_t calculated_crc = calc_crc8(payload_buffer, expected_len - 1);
                     
                     if (received_crc == calculated_crc) {
+                        crsf_debug.frames_ok++;
                         // Si el tipo de paquete es de canales RC, decodificamos
                         if (payload_buffer[0] == CRSF_RC_CHANNELS_TYPE && (expected_len - 2) == CRSF_PAYLOAD_SIZE) {
                             decode_rc_channels(&payload_buffer[1]); // Pasar puntero saltando el byte Type
                             new_data_ready = true;
                         }
+                    } else {
+                        crsf_debug.frames_crc_err++;
                     }
                     current_state = CRSF_STATE_SYNC; // Reiniciar siempre al final de la trama
                 }

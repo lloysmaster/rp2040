@@ -158,6 +158,18 @@ int main() {
                    esc_armed,
                    rc_data->channels[2],
                    rc_data->channels[4]);
+
+            crsf_debug_t dbg;
+            crsf_get_debug(&dbg);
+            printf("[DEBUG] CRSF bytes: %lu | OK: %lu | CRC err: %lu | Len err: %lu | UART err: 0x%lX | Ultimos: "
+                   "%02X %02X %02X %02X %02X %02X %02X %02X\n",
+                   (unsigned long)dbg.bytes_rx,
+                   (unsigned long)dbg.frames_ok,
+                   (unsigned long)dbg.frames_crc_err,
+                   (unsigned long)dbg.frames_len_err,
+                   (unsigned long)dbg.uart_errors,
+                   dbg.last_bytes[0], dbg.last_bytes[1], dbg.last_bytes[2], dbg.last_bytes[3],
+                   dbg.last_bytes[4], dbg.last_bytes[5], dbg.last_bytes[6], dbg.last_bytes[7]);
         }
 
         // 3. Telemetría: GPS y batería se muestrean y se reenvían por CRSF al receptor

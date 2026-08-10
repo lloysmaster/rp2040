@@ -21,8 +21,21 @@ typedef struct {
     uint32_t last_packet_time; // Para failsafe
 } crsf_data_t;
 
+// Contadores de diagnóstico del enlace serie (útiles para depurar el cableado)
+typedef struct {
+    uint32_t bytes_rx;      // bytes crudos leídos del UART por el DMA
+    uint32_t frames_ok;     // tramas con CRC válido
+    uint32_t frames_crc_err;// tramas descartadas por CRC
+    uint32_t frames_len_err;// bytes de largo fuera de rango (desincronización)
+    uint32_t uart_errors;   // flags acumulados del UART (overrun/break/paridad/framing)
+    uint8_t last_bytes[8];  // últimos bytes recibidos, del más antiguo al más nuevo
+} crsf_debug_t;
+
 // Inicializa el hardware (UART + DMA RX/TX) para CRSF
 void crsf_init(void);
+
+// Copia los contadores de diagnóstico acumulados desde el arranque
+void crsf_get_debug(crsf_debug_t *out);
 
 // Función principal que debe ser llamada frecuentemente para procesar el búfer DMA
 // Retorna true si se decodificó un paquete válido nuevo
