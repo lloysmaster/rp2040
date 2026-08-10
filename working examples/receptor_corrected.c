@@ -64,7 +64,8 @@ void enviarTramaCRSF() {
         }
     }
 
-    frame[25] = crsf_crc8(&frame[1], 24);  // ✅ CORREGIDO: CRC desde frame[1], no frame[2]
+    // CRSF: el CRC8 cubre Type + Payload (23 bytes), sin el byte de largo
+    frame[25] = crsf_crc8(&frame[2], 23);
     Serial2.write(frame, 26);
 }
 
