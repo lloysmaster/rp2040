@@ -81,7 +81,8 @@ int main() {
     }
     printf("[DEBUG] Periféricos y motores inicializados\n");
 
-    uint32_t last_loop_us = time_us_32();
+    uint32_t next_loop_us = time_us_32();
+    uint32_t last_sample_us = time_us_32();
     static bool esc_armed = false;
     static attitude_cmd_t last_attitude_cmd = {0};
     static mixer_output_t last_motor_cmd = {0};
@@ -104,8 +105,18 @@ int main() {
             q16_16 gyro_data[3];
             mpu_read_gyro_fixed(gyro_data);   // Ejecutado internamente bajo DMA
 
-            gyro_debug_feed(gyro_data, accel_data, 0.005f);
-            attitude_estimate(accel_data, gyro_data, 0.005f);
+            // Paso de integracion real entre muestras: dar por hecho el nominal
+            // de 5 ms falsea la deriva y los angulos integrados si el bucle no
+            // corre exactamente a 200 Hz.
+            const uint32_t sample_us = time_us_32();
+            float dt_s = (float)(sample_us - last_sample_us) * 1e-6f;
+            last_sample_us = sample_us;
+            if (dt_s <= 0.0f || dt_s > 0.05f) {
+                dt_s = 0.005f; // primera muestra o pausa anormalmente larga
+            }
+
+            gyro_debug_feed(gyro_data, accel_data, dt_s);
+            attitude_estimate(accel_data, gyro_data, dt_s);
             attitude_update(rc_data, gyro_data, &last_attitude_cmd);
             mixer_mix(&last_attitude_cmd, &last_motor_cmd);
         }
@@ -171,11 +182,15 @@ int main() {
         telemetry_set_armed(esc_armed);
         telemetry_update();
 
-        uint32_t now_us = time_us_32();
-        uint32_t loop_dt_us = now_us - last_loop_us;
-        last_loop_us = now_us;
-        if (loop_dt_us < 5000) {
-            sleep_us(5000 - loop_dt_us);
+        // Cadencia contra un instante absoluto. Esperar segun el periodo
+        // anterior no sirve: ese periodo ya incluia su propia espera, asi que
+        // alternaba ciclos cortos y largos con un promedio menor a 5 ms.
+        next_loop_us += 5000;
+        const int32_t remaining_us = (int32_t)(next_loop_us - time_us_32());
+        if (remaining_us > 0) {
+            sleep_us((uint32_t)remaining_us);
+        } else {
+            next_loop_us = time_us_32(); // se perdio el instante: resincronizar
         }
     }
     

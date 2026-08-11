@@ -31,6 +31,7 @@ static uint32_t last_print_us;
 static bool drift_restarted;
 
 static bool suggestion_valid;
+static uint32_t samples_since_print;
 static float last_rate_dps[3];
 static float last_accel_g[3];
 static int16_t last_raw[3];
@@ -289,7 +290,8 @@ void gyro_debug_init(void) {
     reference_deg = 360.0f;
     suggested_sensitivity = 0.0f;
     suggestion_valid = false;
-    last_print_us = 0;
+    samples_since_print = 0;
+    last_print_us = time_us_32();
     for (int i = 0; i < 3; ++i) {
         measured_deg[i] = 0.0f;
         last_rate_dps[i] = 0.0f;
@@ -306,6 +308,7 @@ void gyro_debug_feed(const q16_16 gyro[3], const q16_16 accel[3], float dt_s) {
     }
 
     mpu_get_last_gyro_raw(last_raw);
+    ++samples_since_print;
 
     if (!measuring) {
         for (int i = 0; i < 3; ++i) {
@@ -350,15 +353,21 @@ void gyro_debug_service(bool armed) {
     }
 
     const uint32_t now_us = time_us_32();
-    if (!print_enabled || (now_us - last_print_us) < GYRO_DEBUG_PRINT_PERIOD_US) {
+    const uint32_t elapsed_us = now_us - last_print_us;
+    if (!print_enabled || elapsed_us < GYRO_DEBUG_PRINT_PERIOD_US) {
         return;
     }
     last_print_us = now_us;
 
+    // Muestras por segundo reales: si no coinciden con el bucle nominal de
+    // 200 Hz, todo lo integrado esta mal escalado.
+    const float sample_hz = (float)samples_since_print * 1e6f / (float)elapsed_us;
+    samples_since_print = 0;
+
     const float sensitivity = mpu_get_gyro_sensitivity();
-    printf("[GIRO] sens=%.2f LSB/(deg/s) (+-%u dps) | crudo X=%6ld Y=%6ld Z=%6ld | "
+    printf("[GIRO] sens=%.2f LSB/(deg/s) (+-%u dps) | %.0f Hz | crudo X=%6ld Y=%6ld Z=%6ld | "
            "dps X=%+7.1f Y=%+7.1f Z=%+7.1f | accel g X=%+5.2f Y=%+5.2f Z=%+5.2f\n",
-           (double)sensitivity, (unsigned)mpu_get_gyro_full_scale(),
+           (double)sensitivity, (unsigned)mpu_get_gyro_full_scale(), (double)sample_hz,
            (long)last_raw[0], (long)last_raw[1], (long)last_raw[2],
            (double)last_rate_dps[0], (double)last_rate_dps[1], (double)last_rate_dps[2],
            (double)last_accel_g[0], (double)last_accel_g[1], (double)last_accel_g[2]);
