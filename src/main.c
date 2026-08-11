@@ -13,6 +13,7 @@
 #include "hal/gps/gps.h"
 #include "hal/battery/battery.h"
 #include "telemetry/telemetry.h"
+#include "debug/axis_debug.h"
 #include "config/pinout.h"
 
 
@@ -53,13 +54,13 @@ int main() {
 
     // --- Inicialización de periféricos ---
     crsf_init();
-    printf("[DEBUG] CRSF loopback self-test: %s\n", crsf_self_test() ? "OK" : "FALLO");
     gps_init();
     battery_init();
     telemetry_init();
     attitude_init();
     attitude_set_mode(FLIGHT_MODE_ACRO);
     mixer_init();
+    axis_debug_init();
     dshot_init(MOTOR_BASE_PIN);
     
     for (int i = 0; i < 4; ++i) {
@@ -93,6 +94,7 @@ int main() {
             q16_16 gyro_data[3];
             mpu_read_gyro_fixed(gyro_data);   // Ejecutado internamente bajo DMA
 
+            axis_debug_feed_imu(gyro_data, accel_data);
             attitude_estimate(accel_data, gyro_data, 0.005f);
             attitude_update(rc_data, gyro_data, &last_attitude_cmd);
             mixer_mix(&last_attitude_cmd, &last_motor_cmd);
@@ -150,28 +152,11 @@ int main() {
             }
         }
 
-        // --- Impresión periódica de Debug (cada 200 ms aprox para no saturar) ---
+        // --- Debug de ejes y canales (cada 200 ms aprox para no saturar) ---
         uint32_t current_time = time_us_32();
         if (current_time - last_debug_print_us > 200000) {
             last_debug_print_us = current_time;
-            printf("[DEBUG] RC Connected: %d | Armed: %d | Throttle CH: %d | Arm CH: %d\n",
-                   rc_data->is_connected,
-                   esc_armed,
-                   rc_data->channels[2],
-                   rc_data->channels[4]);
-
-            crsf_debug_t dbg;
-            crsf_get_debug(&dbg);
-            printf("[DEBUG] CRSF bytes: %lu | OK: %lu | CRC err: %lu | Len err: %lu | UART err: 0x%lX | RX pin: %d | Ultimos: "
-                   "%02X %02X %02X %02X %02X %02X %02X %02X\n",
-                   (unsigned long)dbg.bytes_rx,
-                   (unsigned long)dbg.frames_ok,
-                   (unsigned long)dbg.frames_crc_err,
-                   (unsigned long)dbg.frames_len_err,
-                   (unsigned long)dbg.uart_errors,
-                   dbg.rx_pin_level,
-                   dbg.last_bytes[0], dbg.last_bytes[1], dbg.last_bytes[2], dbg.last_bytes[3],
-                   dbg.last_bytes[4], dbg.last_bytes[5], dbg.last_bytes[6], dbg.last_bytes[7]);
+            axis_debug_print(rc_data, &last_attitude_cmd, &last_motor_cmd, esc_armed);
         }
 
         // 3. Telemetría: GPS y batería se muestrean y se reenvían por CRSF al receptor
