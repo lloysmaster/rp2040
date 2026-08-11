@@ -22,7 +22,10 @@ typedef struct {
     uint8_t pin_mosi;
     uint8_t pin_miso;
     uint8_t pin_drdy;
-    // LSB por °/s del fondo de escala elegido (131.0, 65.5, 32.8 o 16.4).
+    // Fondo de escala del giroscopio en °/s: 250, 500, 1000 o 2000.
+    uint16_t gyro_full_scale_dps;
+    // LSB por °/s medidos para ese fondo de escala (nominal 131.0, 65.5, 32.8
+    // o 16.4). Se ignora si no pertenece al fondo de escala configurado.
     float gyro_sensitivity_lsb_per_dps;
 } mpu_config_t;
 
@@ -95,9 +98,10 @@ const mpu_calibration_t *mpu_get_calibration(void);
 
 /**
  * @brief Ajusta en caliente los LSB por °/s usados al convertir el giroscopio.
- *        Si el cambio implica otro fondo de escala se reprograma el sensor y el
- *        sesgo queda invalidado (hay que volver a calibrar).
- * @return true si además cambió el fondo de escala del sensor.
+ *        Solo acepta valores dentro de GYRO_SENSITIVITY_MAX_DEVIATION del
+ *        nominal del fondo de escala actual: el fondo de escala no se toca, así
+ *        que el sesgo calibrado sigue siendo válido.
+ * @return true si el valor se aplicó.
  */
 bool mpu_set_gyro_sensitivity(float lsb_per_dps);
 
@@ -105,6 +109,24 @@ bool mpu_set_gyro_sensitivity(float lsb_per_dps);
  * @brief LSB por °/s en uso.
  */
 float mpu_get_gyro_sensitivity(void);
+
+/**
+ * @brief Cambia el fondo de escala del giroscopio (250, 500, 1000 o 2000 °/s),
+ *        deja la sensibilidad en el nominal de esa escala e invalida el sesgo,
+ *        que estaba expresado en LSB de la escala anterior.
+ * @return true si la escala pedida es válida y se aplicó.
+ */
+bool mpu_set_gyro_full_scale(uint16_t full_scale_dps);
+
+/**
+ * @brief Fondo de escala del giroscopio en °/s.
+ */
+uint16_t mpu_get_gyro_full_scale(void);
+
+/**
+ * @brief Sensibilidad nominal en LSB/(°/s) del fondo de escala en uso.
+ */
+float mpu_get_nominal_gyro_sensitivity(void);
 
 /**
  * @brief Configura la interrupción Data Ready en el sensor.

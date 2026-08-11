@@ -13,6 +13,9 @@
 // Por encima de este giro se considera que el dron se movio y la medicion de
 // deriva vuelve a empezar, para que siempre sea la deriva del ultimo reposo.
 #define GYRO_DEBUG_MOVEMENT_DPS 3.0f
+// Un eje secundario mayor a esta fraccion del eje dominante significa que el
+// giro no fue sobre un solo eje y la medicion no sirve para ajustar la escala.
+#define GYRO_DEBUG_MAX_CROSS_AXIS 0.10f
 
 static const char *axis_name[3] = {"X (roll)", "Y (pitch)", "Z (yaw)"};
 
@@ -27,6 +30,7 @@ static uint32_t saturated_samples;
 static uint32_t last_print_us;
 static bool drift_restarted;
 
+static bool suggestion_valid;
 static float last_rate_dps[3];
 static float last_accel_g[3];
 static int16_t last_raw[3];
@@ -39,11 +43,13 @@ static float absf(float value) {
     return value < 0.0f ? -value : value;
 }
 
-static const char *full_scale_text(float sensitivity) {
-    if (sensitivity >= 98.0f) return "+-250 dps";
-    if (sensitivity >= 49.0f) return "+-500 dps";
-    if (sensitivity >= 24.0f) return "+-1000 dps";
-    return "+-2000 dps";
+static uint16_t next_full_scale(uint16_t full_scale_dps) {
+    switch (full_scale_dps) {
+        case 250:  return 500;
+        case 500:  return 1000;
+        case 1000: return 2000;
+        default:   return 250;
+    }
 }
 
 static void print_help(void) {
@@ -54,6 +60,7 @@ static void print_help(void) {
     printf("[GIRO]  1/2/3 : referencia de giro 90 / 180 / 360 grados\n");
     printf("[GIRO]  r : iniciar o detener la medicion de un giro de referencia\n");
     printf("[GIRO]  a : aplicar la sensibilidad sugerida por la ultima medicion\n");
+    printf("[GIRO]  f : cambiar el fondo de escala (250/500/1000/2000 dps, obliga a recalibrar)\n");
     printf("[GIRO]  +/- : ajustar la sensibilidad en %+.1f LSB/(deg/s)\n",
            (double)GYRO_DEBUG_SENSITIVITY_STEP);
     printf("[GIRO]  d : reiniciar la medicion de deriva (tambien se reinicia sola al mover)\n");
@@ -106,6 +113,7 @@ static void start_measurement(void) {
 
 static void finish_measurement(void) {
     measuring = false;
+    suggestion_valid = false;
 
     int dominant = 0;
     for (int i = 1; i < 3; ++i) {
@@ -131,40 +139,86 @@ static void finish_measurement(void) {
     const float sensitivity = mpu_get_gyro_sensitivity();
     // El angulo integrado escala inversamente con la sensibilidad usada, asi que
     // la sensibilidad correcta es la actual corregida por el error de medicion.
-    suggested_sensitivity = sensitivity * measured / reference_deg;
+    const float candidate = sensitivity * measured / reference_deg;
     const float error_pct = 100.0f * (measured - reference_deg) / reference_deg;
 
     printf("[GIRO] Eje dominante %s: medido %.1f grados vs referencia %.0f (error %+.1f%%)\n",
            axis_name[dominant], (double)measured, (double)reference_deg, (double)error_pct);
-    printf("[GIRO] Sensibilidad sugerida %.2f LSB/(deg/s) (actual %.2f) -> pulsar 'a' para aplicarla\n",
-           (double)suggested_sensitivity, (double)sensitivity);
+
+    const mpu_calibration_t *cal = mpu_get_calibration();
+    if (!cal->valid) {
+        printf("[GIRO] Medicion no valida: el sesgo no esta calibrado, pulsar 'z' y repetir\n");
+        return;
+    }
+
+    for (int i = 0; i < 3; ++i) {
+        if (i == dominant) {
+            continue;
+        }
+        if (absf(measured_deg[i]) > GYRO_DEBUG_MAX_CROSS_AXIS * measured) {
+            printf("[GIRO] Medicion no valida: %s giro %+.1f grados (mas del %.0f%% del eje "
+                   "dominante), repetir el giro sobre un solo eje\n",
+                   axis_name[i], (double)measured_deg[i],
+                   (double)(GYRO_DEBUG_MAX_CROSS_AXIS * 100.0f));
+            return;
+        }
+    }
+
+    const float nominal = mpu_get_nominal_gyro_sensitivity();
+    const float deviation_pct = 100.0f * absf(candidate - nominal) / nominal;
+    if (deviation_pct > 100.0f * GYRO_SENSITIVITY_MAX_DEVIATION) {
+        printf("[GIRO] Sugerencia %.2f descartada: se aparta %.0f%% del nominal %.1f del fondo "
+               "de escala %u dps. Un error asi no es de escala: revisar el giro o cambiar el "
+               "fondo de escala con 'f'\n",
+               (double)candidate, (double)deviation_pct, (double)nominal,
+               (unsigned)mpu_get_gyro_full_scale());
+        return;
+    }
+
+    suggested_sensitivity = candidate;
+    suggestion_valid = true;
+    printf("[GIRO] Sensibilidad sugerida %.2f LSB/(deg/s) (actual %.2f, nominal %.1f) -> "
+           "pulsar 'a' para aplicarla\n",
+           (double)suggested_sensitivity, (double)sensitivity, (double)nominal);
 }
 
 static void apply_suggestion(void) {
-    if (suggested_sensitivity <= 0.0f) {
-        printf("[GIRO] No hay sensibilidad sugerida: medir un giro con 'r'\n");
+    if (!suggestion_valid) {
+        printf("[GIRO] No hay una sugerencia valida: medir un giro con 'r'\n");
         return;
     }
-    const bool scale_changed = mpu_set_gyro_sensitivity(suggested_sensitivity);
-    printf("[GIRO] Sensibilidad aplicada: %.2f LSB/(deg/s) (%s)\n",
-           (double)mpu_get_gyro_sensitivity(), full_scale_text(mpu_get_gyro_sensitivity()));
-    if (scale_changed) {
-        printf("[GIRO] Cambio el fondo de escala del sensor: recalibrar con 'z'\n");
+    if (!mpu_set_gyro_sensitivity(suggested_sensitivity)) {
+        printf("[GIRO] Sensibilidad %.2f rechazada para el fondo de escala %u dps\n",
+               (double)suggested_sensitivity, (unsigned)mpu_get_gyro_full_scale());
+        return;
     }
+    printf("[GIRO] Sensibilidad aplicada: %.2f LSB/(deg/s) (+-%u dps)\n",
+           (double)mpu_get_gyro_sensitivity(), (unsigned)mpu_get_gyro_full_scale());
     printf("[GIRO] Copiar este valor en GYRO_SENSITIVITY_LSB_PER_DPS (config/gyro.h)\n");
     reset_drift();
 }
 
 static void nudge_sensitivity(float delta) {
     const float target = mpu_get_gyro_sensitivity() + delta;
-    if (target <= 1.0f) {
-        printf("[GIRO] Sensibilidad demasiado baja, ignorado\n");
+    if (!mpu_set_gyro_sensitivity(target)) {
+        printf("[GIRO] %.2f fuera del %.0f%% permitido alrededor del nominal %.1f (+-%u dps)\n",
+               (double)target, (double)(GYRO_SENSITIVITY_MAX_DEVIATION * 100.0f),
+               (double)mpu_get_nominal_gyro_sensitivity(), (unsigned)mpu_get_gyro_full_scale());
         return;
     }
-    const bool scale_changed = mpu_set_gyro_sensitivity(target);
-    printf("[GIRO] Sensibilidad = %.2f LSB/(deg/s) (%s)%s\n",
-           (double)mpu_get_gyro_sensitivity(), full_scale_text(mpu_get_gyro_sensitivity()),
-           scale_changed ? " | fondo de escala cambiado: recalibrar con 'z'" : "");
+    printf("[GIRO] Sensibilidad = %.2f LSB/(deg/s) (+-%u dps)\n",
+           (double)mpu_get_gyro_sensitivity(), (unsigned)mpu_get_gyro_full_scale());
+    reset_drift();
+}
+
+static void cycle_full_scale(void) {
+    const uint16_t target = next_full_scale(mpu_get_gyro_full_scale());
+    mpu_set_gyro_full_scale(target);
+    suggestion_valid = false;
+    printf("[GIRO] Fondo de escala = +-%u dps, sensibilidad nominal %.1f LSB/(deg/s)\n",
+           (unsigned)mpu_get_gyro_full_scale(), (double)mpu_get_gyro_sensitivity());
+    printf("[GIRO] El sesgo quedo invalidado (estaba en LSB de la escala anterior): "
+           "calibrar con 'z' antes de medir\n");
     reset_drift();
 }
 
@@ -203,6 +257,13 @@ static void handle_command(int c, bool armed) {
         case 'a':
             apply_suggestion();
             break;
+        case 'f':
+            if (armed) {
+                printf("[GIRO] Cambio de fondo de escala bloqueado con los motores armados\n");
+            } else {
+                cycle_full_scale();
+            }
+            break;
         case '+':
             nudge_sensitivity(GYRO_DEBUG_SENSITIVITY_STEP);
             break;
@@ -227,6 +288,7 @@ void gyro_debug_init(void) {
     print_enabled = true;
     reference_deg = 360.0f;
     suggested_sensitivity = 0.0f;
+    suggestion_valid = false;
     last_print_us = 0;
     for (int i = 0; i < 3; ++i) {
         measured_deg[i] = 0.0f;
@@ -294,9 +356,9 @@ void gyro_debug_service(bool armed) {
     last_print_us = now_us;
 
     const float sensitivity = mpu_get_gyro_sensitivity();
-    printf("[GIRO] sens=%.2f LSB/(deg/s) (%s) | crudo X=%6ld Y=%6ld Z=%6ld | "
+    printf("[GIRO] sens=%.2f LSB/(deg/s) (+-%u dps) | crudo X=%6ld Y=%6ld Z=%6ld | "
            "dps X=%+7.1f Y=%+7.1f Z=%+7.1f | accel g X=%+5.2f Y=%+5.2f Z=%+5.2f\n",
-           (double)sensitivity, full_scale_text(sensitivity),
+           (double)sensitivity, (unsigned)mpu_get_gyro_full_scale(),
            (long)last_raw[0], (long)last_raw[1], (long)last_raw[2],
            (double)last_rate_dps[0], (double)last_rate_dps[1], (double)last_rate_dps[2],
            (double)last_accel_g[0], (double)last_accel_g[1], (double)last_accel_g[2]);
@@ -307,6 +369,10 @@ void gyro_debug_service(bool armed) {
                (double)reference_deg,
                (double)measured_deg[0], (double)measured_deg[1], (double)measured_deg[2]);
         return;
+    }
+
+    if (!mpu_get_calibration()->valid) {
+        printf("[GIRO] SESGO SIN CALIBRAR: la deriva y las mediciones no son fiables, pulsar 'z'\n");
     }
 
     if (drift_restarted && drift_seconds < 1.0f) {
