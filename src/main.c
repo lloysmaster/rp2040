@@ -43,6 +43,7 @@ int main() {
         .pin_mosi = 11, 
         .pin_miso = 12, 
         .pin_drdy = 14,
+        .gyro_full_scale_dps = GYRO_FULL_SCALE_DPS,
         .gyro_sensitivity_lsb_per_dps = GYRO_SENSITIVITY_LSB_PER_DPS
     };
     

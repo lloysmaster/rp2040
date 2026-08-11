@@ -12,7 +12,7 @@ static int dma_rx_chan = -1;
 static uint8_t dma_dummy_byte = 0x00;
 
 static float g_gyro_sensitivity = GYRO_SENSITIVITY_LSB_PER_DPS;
-static uint8_t g_gyro_fs_bits = 0x00;
+static uint16_t g_gyro_fs_dps = GYRO_FULL_SCALE_DPS;
 static mpu_calibration_t g_cal;
 static int16_t g_last_gyro_raw[3];
 
@@ -20,17 +20,29 @@ static q16_16 float_to_q16(float value) {
     return (q16_16)(value * 65536.0f);
 }
 
-static uint8_t mpu_gyro_fs_bits_from_sensitivity(float sensitivity_lsb_per_dps) {
-    if (sensitivity_lsb_per_dps >= 98.0f) {
-        return 0x00; // +-250 °/s -> 131 LSB/(°/s)
+static uint8_t mpu_gyro_fs_bits(uint16_t full_scale_dps) {
+    switch (full_scale_dps) {
+        case 250:  return 0x00;
+        case 500:  return 0x08;
+        case 1000: return 0x10;
+        default:   return 0x18; // 2000 °/s
     }
-    if (sensitivity_lsb_per_dps >= 49.0f) {
-        return 0x08; // +-500 °/s -> 65.5 LSB/(°/s)
+}
+
+static float mpu_gyro_nominal_sensitivity(uint16_t full_scale_dps) {
+    switch (full_scale_dps) {
+        case 250:  return 131.0f;
+        case 500:  return 65.5f;
+        case 1000: return 32.8f;
+        default:   return 16.4f; // 2000 °/s
     }
-    if (sensitivity_lsb_per_dps >= 24.0f) {
-        return 0x10; // +-1000 °/s -> 32.8 LSB/(°/s)
-    }
-    return 0x18; // +-2000 °/s -> 16.4 LSB/(°/s)
+}
+
+static bool mpu_gyro_sensitivity_in_band(float lsb_per_dps, uint16_t full_scale_dps) {
+    const float nominal = mpu_gyro_nominal_sensitivity(full_scale_dps);
+    const float deviation = (lsb_per_dps - nominal) / nominal;
+    const float magnitude = deviation < 0.0f ? -deviation : deviation;
+    return lsb_per_dps > 0.0f && magnitude <= GYRO_SENSITIVITY_MAX_DEVIATION;
 }
 
 static void mpu_decode_raw(const uint8_t raw[6], int16_t out[3]) {
@@ -66,12 +78,12 @@ void mpu_init(mpu_config_t *config) {
     mpu_write(MPU_REG_PWR_MGMT_1, 0x01);
     sleep_ms(50);
 
-    // Configurar la sensibilidad del giroscopio en el registro GYRO_CONFIG
-    g_gyro_sensitivity = (g_cfg->gyro_sensitivity_lsb_per_dps > 0.0f)
+    // Fondo de escala del giroscopio (GYRO_CONFIG) y sensibilidad asociada
+    g_gyro_fs_dps = g_cfg->gyro_full_scale_dps;
+    mpu_write(MPU_REG_GYRO_CONFIG, mpu_gyro_fs_bits(g_gyro_fs_dps));
+    g_gyro_sensitivity = mpu_gyro_sensitivity_in_band(g_cfg->gyro_sensitivity_lsb_per_dps, g_gyro_fs_dps)
         ? g_cfg->gyro_sensitivity_lsb_per_dps
-        : GYRO_SENSITIVITY_LSB_PER_DPS;
-    g_gyro_fs_bits = mpu_gyro_fs_bits_from_sensitivity(g_gyro_sensitivity);
-    mpu_write(MPU_REG_GYRO_CONFIG, g_gyro_fs_bits);
+        : mpu_gyro_nominal_sensitivity(g_gyro_fs_dps);
 
     for (int i = 0; i < 3; ++i) {
         g_cal.gyro_bias_lsb[i] = 0.0f;
@@ -176,9 +188,7 @@ void mpu_read_gyro_fixed(q16_16 *output) {
     int16_t raw[3];
     mpu_read_gyro_raw(raw);
 
-    const float sensitivity = (g_gyro_sensitivity > 0.0f)
-        ? g_gyro_sensitivity
-        : GYRO_SENSITIVITY_LSB_PER_DPS;
+    const float sensitivity = g_gyro_sensitivity;
 
     for (int i = 0; i < 3; ++i) {
         g_last_gyro_raw[i] = raw[i];
@@ -247,20 +257,28 @@ const mpu_calibration_t *mpu_get_calibration(void) {
 }
 
 bool mpu_set_gyro_sensitivity(float lsb_per_dps) {
-    if (lsb_per_dps <= 0.0f) {
+    if (!mpu_gyro_sensitivity_in_band(lsb_per_dps, g_gyro_fs_dps)) {
         return false;
     }
-
     g_gyro_sensitivity = lsb_per_dps;
+    return true;
+}
 
-    const uint8_t fs_bits = mpu_gyro_fs_bits_from_sensitivity(lsb_per_dps);
-    if (fs_bits == g_gyro_fs_bits) {
+float mpu_get_gyro_sensitivity(void) {
+    return g_gyro_sensitivity;
+}
+
+bool mpu_set_gyro_full_scale(uint16_t full_scale_dps) {
+    if (full_scale_dps != 250 && full_scale_dps != 500 &&
+        full_scale_dps != 1000 && full_scale_dps != 2000) {
         return false;
     }
 
-    // Cambia el fondo de escala: el sesgo medido con la escala anterior ya no sirve.
-    g_gyro_fs_bits = fs_bits;
-    mpu_write(MPU_REG_GYRO_CONFIG, g_gyro_fs_bits);
+    g_gyro_fs_dps = full_scale_dps;
+    mpu_write(MPU_REG_GYRO_CONFIG, mpu_gyro_fs_bits(g_gyro_fs_dps));
+    g_gyro_sensitivity = mpu_gyro_nominal_sensitivity(g_gyro_fs_dps);
+
+    // El sesgo estaba expresado en LSB de la escala anterior.
     for (int i = 0; i < 3; ++i) {
         g_cal.gyro_bias_lsb[i] = 0.0f;
     }
@@ -268,8 +286,12 @@ bool mpu_set_gyro_sensitivity(float lsb_per_dps) {
     return true;
 }
 
-float mpu_get_gyro_sensitivity(void) {
-    return g_gyro_sensitivity;
+uint16_t mpu_get_gyro_full_scale(void) {
+    return g_gyro_fs_dps;
+}
+
+float mpu_get_nominal_gyro_sensitivity(void) {
+    return mpu_gyro_nominal_sensitivity(g_gyro_fs_dps);
 }
 
 void mpu_enable_drdy(void) {
