@@ -10,6 +10,9 @@
 #define GYRO_DEBUG_PRINT_PERIOD_US 250000u
 #define GYRO_DEBUG_SATURATION_LSB 32000
 #define GYRO_DEBUG_SENSITIVITY_STEP 0.1f
+// Por encima de este giro se considera que el dron se movio y la medicion de
+// deriva vuelve a empezar, para que siempre sea la deriva del ultimo reposo.
+#define GYRO_DEBUG_MOVEMENT_DPS 3.0f
 
 static const char *axis_name[3] = {"X (roll)", "Y (pitch)", "Z (yaw)"};
 
@@ -22,6 +25,7 @@ static float drift_seconds;
 static float suggested_sensitivity;
 static uint32_t saturated_samples;
 static uint32_t last_print_us;
+static bool drift_restarted;
 
 static float last_rate_dps[3];
 static float last_accel_g[3];
@@ -52,7 +56,7 @@ static void print_help(void) {
     printf("[GIRO]  a : aplicar la sensibilidad sugerida por la ultima medicion\n");
     printf("[GIRO]  +/- : ajustar la sensibilidad en %+.1f LSB/(deg/s)\n",
            (double)GYRO_DEBUG_SENSITIVITY_STEP);
-    printf("[GIRO]  d : reiniciar la medicion de deriva\n");
+    printf("[GIRO]  d : reiniciar la medicion de deriva (tambien se reinicia sola al mover)\n");
     printf("[GIRO]  p : pausar o reanudar las impresiones periodicas\n\n");
 }
 
@@ -62,6 +66,7 @@ static void reset_drift(void) {
     }
     drift_seconds = 0.0f;
     saturated_samples = 0;
+    drift_restarted = false;
 }
 
 static void print_calibration(void) {
@@ -240,6 +245,16 @@ void gyro_debug_feed(const q16_16 gyro[3], const q16_16 accel[3], float dt_s) {
 
     mpu_get_last_gyro_raw(last_raw);
 
+    if (!measuring) {
+        for (int i = 0; i < 3; ++i) {
+            if (absf(q16_to_float(gyro[i])) > GYRO_DEBUG_MOVEMENT_DPS) {
+                reset_drift();
+                drift_restarted = true;
+                break;
+            }
+        }
+    }
+
     for (int i = 0; i < 3; ++i) {
         const float rate = q16_to_float(gyro[i]);
         last_rate_dps[i] = rate;
@@ -294,8 +309,13 @@ void gyro_debug_service(bool armed) {
         return;
     }
 
+    if (drift_restarted && drift_seconds < 1.0f) {
+        printf("[GIRO] Movimiento detectado: deriva reiniciada\n");
+        drift_restarted = false;
+    }
+
     if (drift_seconds > 0.5f) {
-        printf("[GIRO] Deriva en %.1f s: X=%+.2f Y=%+.2f Z=%+.2f grados "
+        printf("[GIRO] Deriva en reposo, %.1f s: X=%+.2f Y=%+.2f Z=%+.2f grados "
                "(%+.2f %+.2f %+.2f deg/s medios)\n",
                (double)drift_seconds,
                (double)drift_deg[0], (double)drift_deg[1], (double)drift_deg[2],
