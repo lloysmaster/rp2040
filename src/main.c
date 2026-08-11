@@ -13,8 +13,9 @@
 #include "hal/gps/gps.h"
 #include "hal/battery/battery.h"
 #include "telemetry/telemetry.h"
-#include "debug/axis_debug.h"
+#include "debug/gyro_debug.h"
 #include "config/pinout.h"
+#include "config/gyro.h"
 
 
 #define SAFE_ARMED_IDLE_THROTTLE DSHOT_MIN_THROTTLE
@@ -42,12 +43,23 @@ int main() {
         .pin_mosi = 11, 
         .pin_miso = 12, 
         .pin_drdy = 14,
-        .gyro_sensitivity_lsb_per_dps = 65 // ±500 °/s: ±250 se saturaba con giros a mano
+        .gyro_sensitivity_lsb_per_dps = GYRO_SENSITIVITY_LSB_PER_DPS
     };
     
     mpu_init(&cfg);
     printf("[DEBUG] MPU6500 inicializado\n");
     mpu_enable_drdy();
+
+    // Calibración de sesgo en reposo: el dron debe estar quieto y nivelado.
+    printf("[DEBUG] Calibrando sensores: no mover el dron...\n");
+    if (mpu_calibrate(GYRO_CALIBRATION_SAMPLES, GYRO_CALIBRATION_MAX_SPREAD_LSB)) {
+        const mpu_calibration_t *cal = mpu_get_calibration();
+        printf("[DEBUG] Calibracion OK: sesgo giro X=%+.1f Y=%+.1f Z=%+.1f LSB\n",
+               (double)cal->gyro_bias_lsb[0], (double)cal->gyro_bias_lsb[1],
+               (double)cal->gyro_bias_lsb[2]);
+    } else {
+        printf("[DEBUG] Calibracion rechazada (hubo movimiento): repetir con 'z' desde el debug\n");
+    }
     
     // Habilitar interrupción física en el flanco de subida del pin DRDY
     gpio_set_irq_enabled_with_callback(14, GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
@@ -60,7 +72,7 @@ int main() {
     attitude_init();
     attitude_set_mode(FLIGHT_MODE_ACRO);
     mixer_init();
-    axis_debug_init();
+    gyro_debug_init();
     dshot_init(MOTOR_BASE_PIN);
     
     for (int i = 0; i < 4; ++i) {
@@ -73,9 +85,6 @@ int main() {
     static attitude_cmd_t last_attitude_cmd = {0};
     static mixer_output_t last_motor_cmd = {0};
     uint16_t esc_throttle[4] = {0, 0, 0, 0};
-
-    // Variables para control de frecuencia de impresión de debug
-    uint32_t last_debug_print_us = 0;
 
     while (true) {
         // 1. Procesar datos del receptor Crossfire (No bloqueante)
@@ -94,7 +103,7 @@ int main() {
             q16_16 gyro_data[3];
             mpu_read_gyro_fixed(gyro_data);   // Ejecutado internamente bajo DMA
 
-            axis_debug_feed_imu(gyro_data, accel_data);
+            gyro_debug_feed(gyro_data, accel_data, 0.005f);
             attitude_estimate(accel_data, gyro_data, 0.005f);
             attitude_update(rc_data, gyro_data, &last_attitude_cmd);
             mixer_mix(&last_attitude_cmd, &last_motor_cmd);
@@ -152,12 +161,8 @@ int main() {
             }
         }
 
-        // --- Debug de ejes y canales (cada 200 ms aprox para no saturar) ---
-        uint32_t current_time = time_us_32();
-        if (current_time - last_debug_print_us > 200000) {
-            last_debug_print_us = current_time;
-            axis_debug_print(rc_data, &last_attitude_cmd, &last_motor_cmd, esc_armed);
-        }
+        // --- Debug de giroscopio y calibración (menú por puerto serie) ---
+        gyro_debug_service(esc_armed);
 
         // 3. Telemetría: GPS y batería se muestrean y se reenvían por CRSF al receptor
         gps_update();
