@@ -2,6 +2,7 @@
 #include "hardware/gpio.h"
 #include "hardware/dma.h"
 #include "math/fixed_point.h"
+#include "config/gyro.h"
 
 static mpu_config_t *g_cfg;
 
@@ -10,17 +11,32 @@ static int dma_tx_chan = -1;
 static int dma_rx_chan = -1;
 static uint8_t dma_dummy_byte = 0x00;
 
-static uint8_t mpu_gyro_fs_bits_from_sensitivity(uint16_t sensitivity_lsb_per_dps) {
-    if (sensitivity_lsb_per_dps >= 131) {
-        return 0x00; // ±250 °/s -> 131 LSB/(°/s)
+static float g_gyro_sensitivity = GYRO_SENSITIVITY_LSB_PER_DPS;
+static uint8_t g_gyro_fs_bits = 0x00;
+static mpu_calibration_t g_cal;
+static int16_t g_last_gyro_raw[3];
+
+static q16_16 float_to_q16(float value) {
+    return (q16_16)(value * 65536.0f);
+}
+
+static uint8_t mpu_gyro_fs_bits_from_sensitivity(float sensitivity_lsb_per_dps) {
+    if (sensitivity_lsb_per_dps >= 98.0f) {
+        return 0x00; // +-250 °/s -> 131 LSB/(°/s)
     }
-    if (sensitivity_lsb_per_dps >= 65) {
-        return 0x08; // ±500 °/s -> 65.5 LSB/(°/s)
+    if (sensitivity_lsb_per_dps >= 49.0f) {
+        return 0x08; // +-500 °/s -> 65.5 LSB/(°/s)
     }
-    if (sensitivity_lsb_per_dps >= 32) {
-        return 0x10; // ±1000 °/s -> 32.8 LSB/(°/s)
+    if (sensitivity_lsb_per_dps >= 24.0f) {
+        return 0x10; // +-1000 °/s -> 32.8 LSB/(°/s)
     }
-    return 0x18; // ±2000 °/s -> 16.4 LSB/(°/s)
+    return 0x18; // +-2000 °/s -> 16.4 LSB/(°/s)
+}
+
+static void mpu_decode_raw(const uint8_t raw[6], int16_t out[3]) {
+    out[0] = (int16_t)(((uint16_t)raw[0] << 8) | raw[1]);
+    out[1] = (int16_t)(((uint16_t)raw[2] << 8) | raw[3]);
+    out[2] = (int16_t)(((uint16_t)raw[4] << 8) | raw[5]);
 }
 
 void mpu_init(mpu_config_t *config) {
@@ -46,11 +62,25 @@ void mpu_init(mpu_config_t *config) {
     if (dma_tx_chan < 0) dma_tx_chan = dma_claim_unused_channel(true);
     if (dma_rx_chan < 0) dma_rx_chan = dma_claim_unused_channel(true);
 
+    // Despertar el sensor antes de configurarlo (reloj interno automático)
+    mpu_write(MPU_REG_PWR_MGMT_1, 0x01);
+    sleep_ms(50);
+
     // Configurar la sensibilidad del giroscopio en el registro GYRO_CONFIG
-    uint16_t sensitivity = (g_cfg->gyro_sensitivity_lsb_per_dps != 0)
+    g_gyro_sensitivity = (g_cfg->gyro_sensitivity_lsb_per_dps > 0.0f)
         ? g_cfg->gyro_sensitivity_lsb_per_dps
-        : 131;
-    mpu_write(MPU_REG_GYRO_CONFIG, mpu_gyro_fs_bits_from_sensitivity(sensitivity));
+        : GYRO_SENSITIVITY_LSB_PER_DPS;
+    g_gyro_fs_bits = mpu_gyro_fs_bits_from_sensitivity(g_gyro_sensitivity);
+    mpu_write(MPU_REG_GYRO_CONFIG, g_gyro_fs_bits);
+
+    for (int i = 0; i < 3; ++i) {
+        g_cal.gyro_bias_lsb[i] = 0.0f;
+        g_cal.accel_bias_lsb[i] = 0.0f;
+        g_cal.gyro_spread_lsb[i] = 0;
+        g_last_gyro_raw[i] = 0;
+    }
+    g_cal.valid = false;
+    g_cal.samples = 0;
 }
 
 void mpu_write(uint8_t reg, uint8_t data) {
@@ -113,40 +143,137 @@ void mpu_read(uint8_t reg, uint8_t *buf, uint8_t len) {
     gpio_put(g_cfg->pin_cs, 1);
 }
 
-void mpu_read_accel_fixed(q16_16 *output) {
+void mpu_read_accel_raw(int16_t *output) {
     uint8_t raw[6];
     mpu_read(MPU_REG_ACCEL_XOUT_H, raw, 6); // Lectura por DMA
-
-    int16_t ax = (raw[0] << 8) | raw[1];
-    int16_t ay = (raw[2] << 8) | raw[3];
-    int16_t az = (raw[4] << 8) | raw[5];
-
-    // Escala de 2g (16384 LSB/g)
-    output[0] = q_div(TO_Q16(ax), TO_Q16(16384));
-    output[1] = q_div(TO_Q16(ay), TO_Q16(16384));
-    output[2] = q_div(TO_Q16(az), TO_Q16(16384));
+    mpu_decode_raw(raw, output);
 }
 
-void mpu_read_gyro_fixed(q16_16 *output) {
+void mpu_read_gyro_raw(int16_t *output) {
     uint8_t raw[6];
     // Los registros de velocidad angular comienzan en 0x43 (GYRO_XOUT_H)
     mpu_read(MPU_REG_GYRO_XOUT_H, raw, 6); // Lectura por DMA
+    mpu_decode_raw(raw, output);
+}
 
-    int16_t gx = (raw[0] << 8) | raw[1];
-    int16_t gy = (raw[2] << 8) | raw[3];
-    int16_t gz = (raw[4] << 8) | raw[5];
+void mpu_get_last_gyro_raw(int16_t *output) {
+    for (int i = 0; i < 3; ++i) {
+        output[i] = g_last_gyro_raw[i];
+    }
+}
 
-    uint16_t sensitivity = (g_cfg != NULL && g_cfg->gyro_sensitivity_lsb_per_dps != 0)
-        ? g_cfg->gyro_sensitivity_lsb_per_dps
-        : 131;
+void mpu_read_accel_fixed(q16_16 *output) {
+    int16_t raw[3];
+    mpu_read_accel_raw(raw);
 
-    output[0] = q_div(TO_Q16(gx), TO_Q16(sensitivity));
-    output[1] = q_div(TO_Q16(gy), TO_Q16(sensitivity));
-    output[2] = q_div(TO_Q16(gz), TO_Q16(sensitivity));
+    for (int i = 0; i < 3; ++i) {
+        const float corrected = (float)raw[i] - g_cal.accel_bias_lsb[i];
+        output[i] = float_to_q16(corrected / ACCEL_SENSITIVITY_LSB_PER_G);
+    }
+}
+
+void mpu_read_gyro_fixed(q16_16 *output) {
+    int16_t raw[3];
+    mpu_read_gyro_raw(raw);
+
+    const float sensitivity = (g_gyro_sensitivity > 0.0f)
+        ? g_gyro_sensitivity
+        : GYRO_SENSITIVITY_LSB_PER_DPS;
+
+    for (int i = 0; i < 3; ++i) {
+        g_last_gyro_raw[i] = raw[i];
+        const float corrected = (float)raw[i] - g_cal.gyro_bias_lsb[i];
+        output[i] = float_to_q16(corrected / sensitivity);
+    }
+}
+
+bool mpu_calibrate(uint16_t samples, uint16_t max_spread_lsb) {
+    if (samples == 0) {
+        return false;
+    }
+
+    int64_t gyro_sum[3] = {0, 0, 0};
+    int64_t accel_sum[3] = {0, 0, 0};
+    int16_t gyro_min[3] = {INT16_MAX, INT16_MAX, INT16_MAX};
+    int16_t gyro_max[3] = {INT16_MIN, INT16_MIN, INT16_MIN};
+
+    for (uint16_t s = 0; s < samples; ++s) {
+        int16_t gyro[3];
+        int16_t accel[3];
+        mpu_read_gyro_raw(gyro);
+        mpu_read_accel_raw(accel);
+
+        for (int i = 0; i < 3; ++i) {
+            gyro_sum[i] += gyro[i];
+            accel_sum[i] += accel[i];
+            if (gyro[i] < gyro_min[i]) gyro_min[i] = gyro[i];
+            if (gyro[i] > gyro_max[i]) gyro_max[i] = gyro[i];
+        }
+        sleep_ms(2); // ~500 Hz de muestreo
+    }
+
+    int32_t spread[3];
+    bool steady = true;
+    for (int i = 0; i < 3; ++i) {
+        spread[i] = (int32_t)gyro_max[i] - (int32_t)gyro_min[i];
+        if (spread[i] > (int32_t)max_spread_lsb) {
+            steady = false;
+        }
+    }
+
+    for (int i = 0; i < 3; ++i) {
+        g_cal.gyro_spread_lsb[i] = spread[i];
+    }
+    g_cal.samples = samples;
+
+    if (!steady) {
+        // El sensor se movió: no se aplican los nuevos sesgos.
+        g_cal.valid = false;
+        return false;
+    }
+
+    for (int i = 0; i < 3; ++i) {
+        g_cal.gyro_bias_lsb[i] = (float)gyro_sum[i] / (float)samples;
+        g_cal.accel_bias_lsb[i] = (float)accel_sum[i] / (float)samples;
+    }
+    // El eje Z mide +1 g con el dron nivelado: ese componente no es sesgo.
+    g_cal.accel_bias_lsb[2] -= ACCEL_SENSITIVITY_LSB_PER_G;
+    g_cal.valid = true;
+    return true;
+}
+
+const mpu_calibration_t *mpu_get_calibration(void) {
+    return &g_cal;
+}
+
+bool mpu_set_gyro_sensitivity(float lsb_per_dps) {
+    if (lsb_per_dps <= 0.0f) {
+        return false;
+    }
+
+    g_gyro_sensitivity = lsb_per_dps;
+
+    const uint8_t fs_bits = mpu_gyro_fs_bits_from_sensitivity(lsb_per_dps);
+    if (fs_bits == g_gyro_fs_bits) {
+        return false;
+    }
+
+    // Cambia el fondo de escala: el sesgo medido con la escala anterior ya no sirve.
+    g_gyro_fs_bits = fs_bits;
+    mpu_write(MPU_REG_GYRO_CONFIG, g_gyro_fs_bits);
+    for (int i = 0; i < 3; ++i) {
+        g_cal.gyro_bias_lsb[i] = 0.0f;
+    }
+    g_cal.valid = false;
+    return true;
+}
+
+float mpu_get_gyro_sensitivity(void) {
+    return g_gyro_sensitivity;
 }
 
 void mpu_enable_drdy(void) {
-    // 1. Despertar el sensor (selección automática de reloj interno)
+    // 1. Asegurar que el sensor está despierto (reloj interno automático)
     mpu_write(MPU_REG_PWR_MGMT_1, 0x01);
     
     // 2. Habilitar la interrupción Data Ready en el sensor

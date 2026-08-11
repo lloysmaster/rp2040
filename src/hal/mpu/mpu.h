@@ -22,8 +22,18 @@ typedef struct {
     uint8_t pin_mosi;
     uint8_t pin_miso;
     uint8_t pin_drdy;
-    uint16_t gyro_sensitivity_lsb_per_dps;
+    // LSB por °/s del fondo de escala elegido (131.0, 65.5, 32.8 o 16.4).
+    float gyro_sensitivity_lsb_per_dps;
 } mpu_config_t;
+
+// Resultado de la última calibración de sensores en reposo.
+typedef struct {
+    bool valid;                 // true si la calibración terminó sin movimiento
+    uint16_t samples;           // muestras promediadas
+    float gyro_bias_lsb[3];     // sesgo del giroscopio en LSB
+    float accel_bias_lsb[3];    // sesgo del acelerómetro en LSB (Z ya sin 1 g)
+    int32_t gyro_spread_lsb[3]; // recorrido pico a pico visto al calibrar
+} mpu_calibration_t;
 
 /**
  * @brief Inicializa el hardware SPI, reserva los canales DMA y configura el MPU6500.
@@ -42,16 +52,59 @@ void mpu_write(uint8_t reg, uint8_t data);
 void mpu_read(uint8_t reg, uint8_t *buf, uint8_t len);
 
 /**
- * @brief Lee los 3 ejes del acelerómetro usando DMA y los convierte a Q16_16.
+ * @brief Lee los 3 ejes del acelerómetro usando DMA y los convierte a Q16_16 (en g).
  * @param output Arreglo de 3 elementos q16_16.
  */
 void mpu_read_accel_fixed(q16_16 *output);
 
 /**
- * @brief Lee los 3 ejes del giroscopio usando DMA y los convierte a Q16_16.
+ * @brief Lee los 3 ejes del giroscopio usando DMA y los convierte a Q16_16 (en °/s).
  * @param output Arreglo de 3 elementos q16_16.
  */
 void mpu_read_gyro_fixed(q16_16 *output);
+
+/**
+ * @brief Lee los 3 ejes crudos del giroscopio, sin escalar ni descontar el sesgo.
+ */
+void mpu_read_gyro_raw(int16_t *output);
+
+/**
+ * @brief Lee los 3 ejes crudos del acelerómetro, sin escalar ni descontar el sesgo.
+ */
+void mpu_read_accel_raw(int16_t *output);
+
+/**
+ * @brief Devuelve la última lectura cruda del giroscopio hecha por mpu_read_gyro_fixed().
+ */
+void mpu_get_last_gyro_raw(int16_t *output);
+
+/**
+ * @brief Promedia el sensor en reposo para obtener el sesgo del giroscopio y del
+ *        acelerómetro. El dron debe estar quieto y nivelado.
+ * @param samples Cantidad de muestras a promediar.
+ * @param max_spread_lsb Recorrido pico a pico del giroscopio tolerado; si se
+ *        supera, se descarta el resultado y se conservan los sesgos anteriores.
+ * @return true si la calibración se aplicó.
+ */
+bool mpu_calibrate(uint16_t samples, uint16_t max_spread_lsb);
+
+/**
+ * @brief Devuelve el resultado de la última calibración (nunca NULL).
+ */
+const mpu_calibration_t *mpu_get_calibration(void);
+
+/**
+ * @brief Ajusta en caliente los LSB por °/s usados al convertir el giroscopio.
+ *        Si el cambio implica otro fondo de escala se reprograma el sensor y el
+ *        sesgo queda invalidado (hay que volver a calibrar).
+ * @return true si además cambió el fondo de escala del sensor.
+ */
+bool mpu_set_gyro_sensitivity(float lsb_per_dps);
+
+/**
+ * @brief LSB por °/s en uso.
+ */
+float mpu_get_gyro_sensitivity(void);
 
 /**
  * @brief Configura la interrupción Data Ready en el sensor.

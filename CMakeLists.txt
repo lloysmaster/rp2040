@@ -61,7 +61,7 @@ add_executable(rp2040
                       src/hal/gps/gps.c
                       src/hal/battery/battery.c
                       src/telemetry/telemetry.c
-                      src/debug/axis_debug.c
+                      src/debug/gyro_debug.c
     )
 
 pico_generate_pio_header(rp2040 ${CMAKE_CURRENT_LIST_DIR}/src/hal/esc/dshot.pio)
