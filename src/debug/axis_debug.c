@@ -37,6 +37,7 @@ static bool rc_reference_valid = false;
 
 // Picos de giroscopio acumulados entre impresiones (con signo)
 static float gyro_peak[3];
+static float gyro_last[3];
 static float accel_last[3];
 
 static float q16_to_float(q16_16 value) {
@@ -50,6 +51,7 @@ void axis_debug_init(void) {
     }
     for (int i = 0; i < 3; ++i) {
         gyro_peak[i] = 0.0f;
+        gyro_last[i] = 0.0f;
         accel_last[i] = 0.0f;
     }
 }
@@ -63,6 +65,7 @@ void axis_debug_feed_imu(const q16_16 gyro[3], const q16_16 accel[3]) {
             if (magnitude > peak) {
                 gyro_peak[i] = rate;
             }
+            gyro_last[i] = rate;
         }
     }
     if (accel != NULL) {
@@ -88,6 +91,9 @@ static void print_gyro_axes(void) {
     printf("[EJES] Giro pico (deg/s): X(roll)=%+7.1f  Y(pitch)=%+7.1f  Z(yaw)=%+7.1f -> %s\n",
            gyro_peak[0], gyro_peak[1], gyro_peak[2],
            dominant < 0 ? "sin movimiento" : axis_name[dominant]);
+    // Muestra instantánea: es la que alimentó el último PID, comparable con [MIX]
+    printf("[EJES] Giro ahora (deg/s): X=%+7.1f  Y=%+7.1f  Z=%+7.1f\n",
+           gyro_last[0], gyro_last[1], gyro_last[2]);
 
     float roll_rad = 0.0f, pitch_rad = 0.0f, yaw_rad = 0.0f;
     attitude_get_angles(&roll_rad, &pitch_rad, &yaw_rad);
@@ -168,7 +174,8 @@ void axis_debug_print(const crsf_data_t *rc_data,
     print_gyro_axes();
     print_rc_channels(rc_data);
 
-    printf("[MIX] Armado=%d | PID roll=%+ld pitch=%+ld yaw=%+ld thr=%+ld | M1=%ld M2=%ld M3=%ld M4=%ld\n",
+    printf("[MIX] Armado=%d | PID roll=%+ld pitch=%+ld yaw=%+ld thr=%+ld | "
+           "M1(atras-der)=%ld M2(adel-der)=%ld M3(atras-izq)=%ld M4(adel-izq)=%ld\n",
            armed ? 1 : 0,
            (long)cmd->roll_output, (long)cmd->pitch_output,
            (long)cmd->yaw_output, (long)cmd->throttle,

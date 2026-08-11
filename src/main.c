@@ -42,7 +42,7 @@ int main() {
         .pin_mosi = 11, 
         .pin_miso = 12, 
         .pin_drdy = 14,
-        .gyro_sensitivity_lsb_per_dps = 131
+        .gyro_sensitivity_lsb_per_dps = 65 // ±500 °/s: ±250 se saturaba con giros a mano
     };
     
     mpu_init(&cfg);

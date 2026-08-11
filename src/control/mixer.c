@@ -29,10 +29,18 @@ void mixer_mix(const attitude_cmd_t *attitude, mixer_output_t *output) {
         return;
     }
 
-    output->motor[0] = throttle + roll - pitch + yaw;
-    output->motor[1] = throttle - roll - pitch - yaw;
-    output->motor[2] = throttle + roll + pitch - yaw;
-    output->motor[3] = throttle - roll + pitch + yaw;
+    // Distribución para el quad en X soldado como:
+    //   motor[0]=M1 atrás-derecha   motor[1]=M2 adelante-derecha
+    //   motor[2]=M3 atrás-izquierda motor[3]=M4 adelante-izquierda
+    // roll+ sube el lado derecho, pitch+ sube los traseros (morro arriba) y
+    // yaw+ acelera la diagonal que gira en horario, igual que los signos del
+    // giroscopio que consume el PID.
+    const int32_t yaw_a = MIXER_YAW_CW_DIAGONAL_M1_M4 ? yaw : -yaw;
+
+    output->motor[0] = throttle + roll + pitch + yaw_a;
+    output->motor[1] = throttle + roll - pitch - yaw_a;
+    output->motor[2] = throttle - roll + pitch - yaw_a;
+    output->motor[3] = throttle - roll - pitch + yaw_a;
 
     for (int i = 0; i < 4; ++i) {
         if (output->motor[i] < 0) {
