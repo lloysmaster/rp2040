@@ -41,6 +41,27 @@ telemetry_packet_t telemetry = {0x02};
 
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
+// ===== Calidad del enlace ESP-NOW, medida en el receptor =====
+// El FC no genera tramas LINK_STATISTICS: el enlace de radio real es el
+// ESP-NOW entre emisor y receptor, por lo que estas metricas se calculan aqui.
+#define RC_PACKET_PERIOD_MS   20   // el emisor envia canales a 50Hz
+#define LINK_WINDOW_MS        1000 // ventana de medicion de LQ
+#define LINK_EXPECTED_PACKETS (LINK_WINDOW_MS / RC_PACKET_PERIOD_MS)
+#define LINK_TIMEOUT_MS       500  // sin paquetes RC => enlace caido
+
+volatile int8_t   uplinkRSSI = 0;          // dBm del ultimo paquete RC recibido
+volatile int8_t   uplinkNoiseFloor = -96;  // dBm de piso de ruido informado por el PHY
+volatile uint16_t uplinkPacketsInWindow = 0;
+volatile uint32_t lastRcRxMillis = 0;
+volatile uint16_t telemetrySentInWindow = 0;
+volatile uint16_t telemetryAckedInWindow = 0;
+
+uint32_t lastLinkWindowMillis = 0;
+uint8_t  uplinkQuality = 0;   // % de paquetes RC recibidos respecto de los esperados
+uint8_t  downlinkQuality = 0; // % de tramas de telemetria aceptadas por el radio
+uint8_t  txPowerDbm = 0;
+bool     linkUp = false;
+
 // ---------- ESP-NOW: recepcion de canales RC desde el emisor ----------
 void OnDataRecv(const esp_now_recv_info_t * info, const uint8_t *incoming_data, int len) {
   if (len < 1) return;
@@ -49,9 +70,81 @@ void OnDataRecv(const esp_now_recv_info_t * info, const uint8_t *incoming_data, 
     memcpy(&pkt, incoming_data, sizeof(pkt));
     for (int i = 0; i < 16; i++) channels[i] = pkt.ch[i];
 
+    if (info != NULL && info->rx_ctrl != NULL) {
+      uplinkRSSI = info->rx_ctrl->rssi;
+      uplinkNoiseFloor = info->rx_ctrl->noise_floor;
+    }
+    uplinkPacketsInWindow++;
+    lastRcRxMillis = millis();
+
     Serial.print("Throttle: ");
     Serial.println(channels[2]);
   }
+}
+
+// ---------- ESP-NOW: resultado del envio de telemetria (calidad de bajada) ----------
+// Con direccion de broadcast el radio no espera ACK, por lo que este porcentaje
+// refleja que la capa de radio acepto la trama, no que el emisor la recibio.
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  telemetrySentInWindow++;
+  if (status == ESP_NOW_SEND_SUCCESS) telemetryAckedInWindow++;
+}
+
+static uint8_t percent(uint32_t part, uint32_t total) {
+  if (total == 0) return 0;
+  uint32_t pct = (part * 100) / total;
+  return pct > 100 ? 100 : (uint8_t)pct;
+}
+
+// Potencia de transmision del radio WiFi en dBm (el driver la reporta en 0.25dBm)
+static uint8_t leerPotenciaTxDbm() {
+  int8_t power_quarter_dbm = 0;
+  if (esp_wifi_get_max_tx_power(&power_quarter_dbm) != ESP_OK) return 0;
+  int power_dbm = power_quarter_dbm / 4;
+  return power_dbm < 0 ? 0 : (uint8_t)power_dbm;
+}
+
+// ---------- Calculo de las metricas de calidad de senal ----------
+void actualizarCalidadEnlace() {
+  uint32_t now = millis();
+
+  if (now - lastLinkWindowMillis >= LINK_WINDOW_MS) {
+    uint16_t rcRx = uplinkPacketsInWindow;
+    uint16_t telSent = telemetrySentInWindow;
+    uint16_t telAcked = telemetryAckedInWindow;
+    uplinkPacketsInWindow = 0;
+    telemetrySentInWindow = 0;
+    telemetryAckedInWindow = 0;
+    lastLinkWindowMillis = now;
+
+    uplinkQuality = percent(rcRx, LINK_EXPECTED_PACKETS);
+    downlinkQuality = percent(telAcked, telSent);
+    txPowerDbm = leerPotenciaTxDbm();
+  }
+
+  linkUp = (lastRcRxMillis != 0) && (now - lastRcRxMillis < LINK_TIMEOUT_MS);
+
+  if (!linkUp) {
+    uplinkQuality = 0;
+    telemetry.linkRSSI1 = 0;
+    telemetry.linkRSSI2 = 0;
+    telemetry.linkQuality = 0;
+    telemetry.linkSNR = 0;
+    telemetry.linkTXPower = txPowerDbm;
+    return;
+  }
+
+  int8_t rssi = uplinkRSSI;
+  int8_t noise = uplinkNoiseFloor;
+  int snr = (int)rssi - (int)noise;
+  if (snr < -128) snr = -128;
+  if (snr > 127) snr = 127;
+
+  telemetry.linkRSSI1   = rssi < 0 ? (uint8_t)(-rssi) : 0; // convencion CRSF: dBm en positivo
+  telemetry.linkRSSI2   = 0;                               // el ESP32 expone una sola antena
+  telemetry.linkQuality = uplinkQuality;
+  telemetry.linkSNR     = (int8_t)snr;
+  telemetry.linkTXPower = txPowerDbm;
 }
 
 // ---------- CRC8 CRSF (poly 0xD5) ----------
@@ -141,15 +234,8 @@ void parseCRSFFrame(uint8_t *frame, uint8_t frameLen) {
       }
       break;
 
-    case 0x14: // LINK_STATISTICS
-      if (payloadLen >= 10) {
-        telemetry.linkRSSI1   = payload[0];
-        telemetry.linkRSSI2   = payload[1];
-        telemetry.linkQuality = payload[2];
-        telemetry.linkSNR     = (int8_t)payload[3];
-        telemetry.linkTXPower = payload[6];
-      }
-      break;
+    // 0x14 LINK_STATISTICS no se parsea: el enlace de radio es el ESP-NOW de este
+    // receptor, asi que las metricas de calidad se miden localmente y se envian al FC.
 
     case 0x21: // FLIGHT_MODE (string ASCII terminada en \0)
       {
@@ -200,6 +286,28 @@ void leerTelemetriaCRSF() {
   }
 }
 
+// ---------- Envio de LINK_STATISTICS al FC (calidad del enlace RC) ----------
+void enviarLinkStatsCRSF() {
+  uint8_t frame[14];
+  frame[0] = 0xC8; // Sync
+  frame[1] = 12;   // Largo: tipo + 10 bytes de payload + crc
+  frame[2] = 0x14; // Tipo: LINK_STATISTICS
+
+  frame[3]  = telemetry.linkRSSI1;   // RSSI de subida antena 1 (dBm positivo)
+  frame[4]  = telemetry.linkRSSI2;   // RSSI de subida antena 2
+  frame[5]  = telemetry.linkQuality; // LQ de subida en %
+  frame[6]  = (uint8_t)telemetry.linkSNR;
+  frame[7]  = 0;                     // antena activa (unica)
+  frame[8]  = 0;                     // modo RF (no aplica en ESP-NOW)
+  frame[9]  = telemetry.linkTXPower; // potencia de transmision en dBm
+  frame[10] = telemetry.linkRSSI1;   // RSSI de bajada: mismo enlace fisico
+  frame[11] = downlinkQuality;       // LQ de bajada (telemetria confirmada)
+  frame[12] = (uint8_t)telemetry.linkSNR;
+
+  frame[13] = crsf_crc8(&frame[2], 11);
+  Serial2.write(frame, 14);
+}
+
 // ---------- Envio periodico de telemetria al emisor por ESP-NOW ----------
 unsigned long lastTelemetrySend = 0;
 void enviarTelemetriaESPNOW() {
@@ -227,6 +335,7 @@ void setup() {
   }
 
   esp_now_register_recv_cb(OnDataRecv);
+  esp_now_register_send_cb(OnDataSent);
 
   esp_now_peer_info_t peerInfo = {};
   memcpy(peerInfo.peer_addr, broadcastAddress, 6);
@@ -237,16 +346,26 @@ void setup() {
     return;
   }
 
+  txPowerDbm = leerPotenciaTxDbm();
+  lastLinkWindowMillis = millis();
+
   Serial.println("Receptor listo: RC por ESP-NOW -> CRSF al FC, y telemetria CRSF -> ESP-NOW al emisor.");
 }
 
 unsigned long lastSendTime = 0;
+unsigned long lastLinkStatsSend = 0;
 void loop() {
   leerTelemetriaCRSF();       // 1. Leer telemetria que llega del FC por Serial2
-  enviarTelemetriaESPNOW();   // 2. Reenviarla al emisor cuando corresponda
+  actualizarCalidadEnlace();  // 2. Medir RSSI/LQ/SNR del enlace ESP-NOW
+  enviarTelemetriaESPNOW();   // 3. Reenviar la telemetria al emisor cuando corresponda
 
-  if (millis() - lastSendTime >= 10) { // 3. Enviar canales RC al FC a 100Hz
+  if (millis() - lastSendTime >= 10) { // 4. Enviar canales RC al FC a 100Hz
     enviarTramaCRSF();
     lastSendTime = millis();
+  }
+
+  if (millis() - lastLinkStatsSend >= 100) { // 5. Informar la calidad del enlace al FC a 10Hz
+    enviarLinkStatsCRSF();
+    lastLinkStatsSend = millis();
   }
 }
