@@ -4,6 +4,7 @@
 #include "control/pid.h"
 #include "control/mixer.h"
 #include "hal/esc/dshot.h"
+#include "config/rcMap.h"
 
 typedef struct {
     float prev_filtered[3];
@@ -155,15 +156,15 @@ void attitude_update(const crsf_data_t *rc_data, const q16_16 gyro[3], attitude_
     const float pitch_rate = filtered_rates[1];
     const float yaw_rate = filtered_rates[2];
 
-    const float desired_roll = rc_to_rate(rc_data->channels[0]);
-    const float desired_pitch = -rc_to_rate(rc_data->channels[1]);
-    const float desired_yaw = rc_to_rate(rc_data->channels[3]);
+    const float desired_roll  = RC_SIGN_ROLL  * rc_to_rate(rc_data->channels[RC_CHANNEL_ROLL]);
+    const float desired_pitch = RC_SIGN_PITCH * rc_to_rate(rc_data->channels[RC_CHANNEL_PITCH]);
+    const float desired_yaw   = RC_SIGN_YAW   * rc_to_rate(rc_data->channels[RC_CHANNEL_YAW]);
 
     output->roll_output = (int32_t)pid_update(&roll_pid, desired_roll, roll_rate, dt_s);
     output->pitch_output = (int32_t)pid_update(&pitch_pid, desired_pitch, pitch_rate, dt_s);
     output->yaw_output = (int32_t)pid_update(&yaw_pid, desired_yaw, yaw_rate, dt_s);
 
-    const uint16_t rc_throttle = rc_data->channels[2];
+    const uint16_t rc_throttle = rc_data->channels[RC_CHANNEL_THROTTLE];
     const uint16_t throttle_min = 172u;
     const uint16_t throttle_max = 1811u;
     if (rc_throttle <= throttle_min) {
