@@ -16,6 +16,7 @@
 #include "debug/gyro_debug.h"
 #include "config/pinout.h"
 #include "config/gyro.h"
+#include "config/rcMap.h"
 
 
 #define SAFE_ARMED_IDLE_THROTTLE DSHOT_MIN_THROTTLE
@@ -143,8 +144,8 @@ int main() {
                 dshot_set_throttle(i, 0);
             }
         } else {
-            bool arm_switch = (rc_data->channels[4] > 1500);
-            bool throttle_low = (rc_data->channels[2] < 1050);
+            bool arm_switch = (rc_data->channels[RC_CHANNEL_ARM] > 1500);
+            bool throttle_low = (rc_data->channels[RC_CHANNEL_THROTTLE] < 1050);
 
             if (!esc_armed) {
                 if (arm_switch && throttle_low) {
