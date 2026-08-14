@@ -1,6 +1,7 @@
 #include <esp_now.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
+#include <esp_idf_version.h>
 
 #define CRSF_BAUDRATE 420000
 
@@ -85,7 +86,13 @@ void OnDataRecv(const esp_now_recv_info_t * info, const uint8_t *incoming_data, 
 // ---------- ESP-NOW: resultado del envio de telemetria (calidad de bajada) ----------
 // Con direccion de broadcast el radio no espera ACK, por lo que este porcentaje
 // refleja que la capa de radio acepto la trama, no que el emisor la recibio.
+// La firma del callback cambio en IDF 5.4 (core ESP32 3.2+): antes recibia la MAC
+// del destino, ahora una estructura con la informacion de la transmision.
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 0)
+void OnDataSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status) {
+#else
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+#endif
   telemetrySentInWindow++;
   if (status == ESP_NOW_SEND_SUCCESS) telemetryAckedInWindow++;
 }
