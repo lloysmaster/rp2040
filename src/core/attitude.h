@@ -18,7 +18,11 @@ typedef struct {
 void attitude_init(void);
 void attitude_set_mode(flight_mode_t mode);
 flight_mode_t attitude_get_mode(void);
-void attitude_update(const crsf_data_t *rc_data, const q16_16 gyro[3], attitude_cmd_t *output);
+// dt_s es el tiempo real transcurrido desde la muestra anterior: los PID y el
+// filtro de velocidades lo necesitan para que sus ganancias y su frecuencia de
+// corte no dependan de la cadencia del bucle.
+void attitude_update(const crsf_data_t *rc_data, const q16_16 gyro[3],
+                     attitude_cmd_t *output, float dt_s);
 
 // Estimación de ángulos (filtro complementario giroscopio + acelerómetro).
 // Necesaria para la telemetría CRSF de actitud.
