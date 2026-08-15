@@ -24,6 +24,18 @@
 // equivocado.
 #define GYRO_SENSITIVITY_MAX_DEVIATION 0.25f
 
+// Filtro digital interno (DLPF) del giroscopio: 1 = 184 Hz de banda y salida a
+// 1 kHz. Con 0 el DLPF queda puenteado (250 Hz de banda, salida a 8 kHz) y el
+// bucle vería aliasing de las vibraciones del motor.
+#define MPU_DLPF_CFG 0x01
+
+// Filtro digital interno del acelerómetro (ACCEL_CONFIG2): 1 = 184 Hz.
+#define MPU_ACCEL_DLPF_CFG 0x01
+
+// Divisor de la tasa de salida: 0 deja el 1 kHz que fija el DLPF. La cadencia
+// del sensor debe ser al menos la del bucle de control.
+#define MPU_SMPLRT_DIV 0x00
+
 // Sensibilidad del acelerómetro en LSB/g (escala +-2 g del MPU6500).
 #define ACCEL_SENSITIVITY_LSB_PER_G 16384.0f
 

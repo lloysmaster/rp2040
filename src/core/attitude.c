@@ -23,7 +23,12 @@ static float angle_pitch = 0.0f;
 static float angle_yaw = 0.0f;
 
 #define DEG_TO_RAD 0.01745329252f
-#define ATTITUDE_COMPLEMENTARY_ALPHA 0.98f
+// Constante de tiempo del filtro complementario. Equivale al alpha 0.98 que se
+// usaba con el periodo fijo de 5 ms: tau = dt * alpha / (1 - alpha).
+#define ATTITUDE_COMPLEMENTARY_TAU_S 0.245f
+// Corte del filtro de velocidades angulares. Equivale al alpha 0.18 que se
+// usaba a 200 Hz: fc = (1 - alpha) / (2 * pi * dt * alpha).
+#define ATTITUDE_RATE_FILTER_CUTOFF_HZ 7.0f
 #define PI_F 3.14159265359f
 
 static float q16_to_float(q16_16 value) {
@@ -45,15 +50,22 @@ static float rc_to_rate(uint16_t channel) {
     return (float)centered * 0.25f;
 }
 
-static void apply_notch_filter(const float raw[3], float filtered[3]) {
-    const float alpha = 0.18f;
+// Un alpha fijo ata el corte del filtro al periodo del bucle: al cambiar la
+// frecuencia habria que retocarlo a mano. Se deriva de dt para que el corte en
+// Hz sea el mismo a cualquier cadencia.
+static float lowpass_alpha(float cutoff_hz, float dt_s) {
+    const float rc = 1.0f / (2.0f * PI_F * cutoff_hz);
+    return dt_s / (rc + dt_s);
+}
+
+static void apply_notch_filter(const float raw[3], float filtered[3], float alpha) {
     for (int i = 0; i < 3; ++i) {
         filter_state.prev_filtered[i] = filter_state.prev_filtered[i] + alpha * (raw[i] - filter_state.prev_filtered[i]);
         filtered[i] = filter_state.prev_filtered[i];
     }
 }
 
-static void apply_sensor_filter(const q16_16 gyro[3], float filtered[3]) {
+static void apply_sensor_filter(const q16_16 gyro[3], float filtered[3], float dt_s) {
     float raw[3];
     for (int i = 0; i < 3; ++i) {
         raw[i] = q16_to_float(gyro[i]);
@@ -68,7 +80,8 @@ static void apply_sensor_filter(const q16_16 gyro[3], float filtered[3]) {
         case FLIGHT_MODE_STABILIZED:
         case FLIGHT_MODE_ACRO:
         default:
-            apply_notch_filter(raw, filtered);
+            apply_notch_filter(raw, filtered,
+                               lowpass_alpha(ATTITUDE_RATE_FILTER_CUTOFF_HZ, dt_s));
             break;
     }
 }
@@ -117,8 +130,10 @@ void attitude_estimate(const q16_16 accel[3], const q16_16 gyro[3], float dt_s) 
     if (accel_magnitude > 0.7f && accel_magnitude < 1.3f) {
         const float roll_acc = atan2f(ay, az);
         const float pitch_acc = atan2f(-ax, sqrtf(ay * ay + az * az));
-        roll = ATTITUDE_COMPLEMENTARY_ALPHA * roll + (1.0f - ATTITUDE_COMPLEMENTARY_ALPHA) * roll_acc;
-        pitch = ATTITUDE_COMPLEMENTARY_ALPHA * pitch + (1.0f - ATTITUDE_COMPLEMENTARY_ALPHA) * pitch_acc;
+        const float alpha = ATTITUDE_COMPLEMENTARY_TAU_S /
+                            (ATTITUDE_COMPLEMENTARY_TAU_S + dt_s);
+        roll = alpha * roll + (1.0f - alpha) * roll_acc;
+        pitch = alpha * pitch + (1.0f - alpha) * pitch_acc;
     }
 
     angle_roll = roll;
@@ -135,8 +150,10 @@ void attitude_get_angles(float *roll_rad, float *pitch_rad, float *yaw_rad) {
     if (yaw_rad != NULL) *yaw_rad = angle_yaw;
 }
 
-void attitude_update(const crsf_data_t *rc_data, const q16_16 gyro[3], attitude_cmd_t *output) {
-    if (!attitude_ready || rc_data == NULL || gyro == NULL || output == NULL) {
+void attitude_update(const crsf_data_t *rc_data, const q16_16 gyro[3],
+                    attitude_cmd_t *output, float dt_s) {
+    if (!attitude_ready || rc_data == NULL || gyro == NULL || output == NULL ||
+        dt_s <= 0.0f) {
         return;
     }
 
@@ -149,9 +166,8 @@ void attitude_update(const crsf_data_t *rc_data, const q16_16 gyro[3], attitude_
         return;
     }
 
-    const float dt_s = 0.005f;
     float filtered_rates[3];
-    apply_sensor_filter(gyro, filtered_rates);
+    apply_sensor_filter(gyro, filtered_rates, dt_s);
     const float roll_rate = filtered_rates[0];
     const float pitch_rate = filtered_rates[1];
     const float yaw_rate = filtered_rates[2];

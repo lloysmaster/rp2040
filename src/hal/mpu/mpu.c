@@ -11,6 +11,12 @@ static int dma_tx_chan = -1;
 static int dma_rx_chan = -1;
 static uint8_t dma_dummy_byte = 0x00;
 
+// El MPU6500 solo garantiza 1 MHz para escribir registros, pero admite hasta
+// 20 MHz para leer los de datos: con la lectura a 1 MHz cada muestra costaba
+// ~112 us de espera, mas que todo el calculo del bucle junto.
+#define MPU_SPI_WRITE_HZ 1000000u
+#define MPU_SPI_READ_HZ  8000000u
+
 static float g_gyro_sensitivity = GYRO_SENSITIVITY_LSB_PER_DPS;
 static uint16_t g_gyro_fs_dps = GYRO_FULL_SCALE_DPS;
 static mpu_calibration_t g_cal;
@@ -43,6 +49,22 @@ static bool mpu_gyro_sensitivity_in_band(float lsb_per_dps, uint16_t full_scale_
     const float deviation = (lsb_per_dps - nominal) / nominal;
     const float magnitude = deviation < 0.0f ? -deviation : deviation;
     return lsb_per_dps > 0.0f && magnitude <= GYRO_SENSITIVITY_MAX_DEVIATION;
+}
+
+static void mpu_accel_to_fixed(const int16_t raw[3], q16_16 *output) {
+    for (int i = 0; i < 3; ++i) {
+        const float corrected = (float)raw[i] - g_cal.accel_bias_lsb[i];
+        output[i] = float_to_q16(corrected / ACCEL_SENSITIVITY_LSB_PER_G);
+    }
+}
+
+static void mpu_gyro_to_fixed(const int16_t raw[3], q16_16 *output) {
+    const float inv_sensitivity = 1.0f / g_gyro_sensitivity;
+    for (int i = 0; i < 3; ++i) {
+        g_last_gyro_raw[i] = raw[i];
+        const float corrected = (float)raw[i] - g_cal.gyro_bias_lsb[i];
+        output[i] = float_to_q16(corrected * inv_sensitivity);
+    }
 }
 
 static void mpu_decode_raw(const uint8_t raw[6], int16_t out[3]) {
@@ -78,6 +100,13 @@ void mpu_init(mpu_config_t *config) {
     mpu_write(MPU_REG_PWR_MGMT_1, 0x01);
     sleep_ms(50);
 
+    // Filtro interno y tasa de salida: sin escribir estos registros el sensor
+    // queda con el DLPF puenteado (salida a 8 kHz, 250 Hz de banda), asi que el
+    // bucle muestrea con aliasing todo lo que vibra por encima de su Nyquist.
+    mpu_write(MPU_REG_CONFIG, MPU_DLPF_CFG);
+    mpu_write(MPU_REG_ACCEL_CONFIG2, MPU_ACCEL_DLPF_CFG);
+    mpu_write(MPU_REG_SMPLRT_DIV, MPU_SMPLRT_DIV);
+
     // Fondo de escala del giroscopio (GYRO_CONFIG) y sensibilidad asociada
     g_gyro_fs_dps = g_cfg->gyro_full_scale_dps;
     mpu_write(MPU_REG_GYRO_CONFIG, mpu_gyro_fs_bits(g_gyro_fs_dps));
@@ -97,9 +126,11 @@ void mpu_init(mpu_config_t *config) {
 
 void mpu_write(uint8_t reg, uint8_t data) {
     uint8_t buf[2] = { (uint8_t)(reg & 0x7F), data }; // MSB 0 para escritura
+    spi_set_baudrate(g_cfg->spi, MPU_SPI_WRITE_HZ);
     gpio_put(g_cfg->pin_cs, 0);
     spi_write_blocking(g_cfg->spi, buf, 2);
     gpio_put(g_cfg->pin_cs, 1);
+    spi_set_baudrate(g_cfg->spi, MPU_SPI_READ_HZ);
 }
 
 void mpu_read(uint8_t reg, uint8_t *buf, uint8_t len) {
@@ -177,24 +208,29 @@ void mpu_get_last_gyro_raw(int16_t *output) {
 void mpu_read_accel_fixed(q16_16 *output) {
     int16_t raw[3];
     mpu_read_accel_raw(raw);
-
-    for (int i = 0; i < 3; ++i) {
-        const float corrected = (float)raw[i] - g_cal.accel_bias_lsb[i];
-        output[i] = float_to_q16(corrected / ACCEL_SENSITIVITY_LSB_PER_G);
-    }
+    mpu_accel_to_fixed(raw, output);
 }
 
 void mpu_read_gyro_fixed(q16_16 *output) {
     int16_t raw[3];
     mpu_read_gyro_raw(raw);
+    mpu_gyro_to_fixed(raw, output);
+}
 
-    const float sensitivity = g_gyro_sensitivity;
+void mpu_read_imu_fixed(q16_16 *accel_output, q16_16 *gyro_output) {
+    // Acelerometro, temperatura y giroscopio son registros contiguos: una sola
+    // rafaga cuesta la mitad de tiempo de bus que dos lecturas separadas, y
+    // ademas las dos mitades pertenecen a la misma muestra del sensor.
+    uint8_t raw[14];
+    mpu_read(MPU_REG_ACCEL_XOUT_H, raw, sizeof(raw));
 
-    for (int i = 0; i < 3; ++i) {
-        g_last_gyro_raw[i] = raw[i];
-        const float corrected = (float)raw[i] - g_cal.gyro_bias_lsb[i];
-        output[i] = float_to_q16(corrected / sensitivity);
-    }
+    int16_t accel_raw[3];
+    int16_t gyro_raw[3];
+    mpu_decode_raw(raw, accel_raw);
+    mpu_decode_raw(&raw[8], gyro_raw); // los bytes 6 y 7 son la temperatura
+
+    mpu_accel_to_fixed(accel_raw, accel_output);
+    mpu_gyro_to_fixed(gyro_raw, gyro_output);
 }
 
 bool mpu_calibrate(uint16_t samples, uint16_t max_spread_lsb) {

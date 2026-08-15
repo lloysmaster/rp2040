@@ -17,6 +17,8 @@
 #include "config/pinout.h"
 #include "config/gyro.h"
 #include "config/rcMap.h"
+#include "config/loopConfig.h"
+#include "config/debugConfig.h"
 
 
 #define SAFE_ARMED_IDLE_THROTTLE DSHOT_MIN_THROTTLE
@@ -74,7 +76,9 @@ int main() {
     attitude_init();
     attitude_set_mode(FLIGHT_MODE_ACRO);
     mixer_init();
+#if GYRO_DEBUG_ENABLED
     gyro_debug_init();
+#endif
     dshot_init(MOTOR_BASE_PIN);
     
     for (int i = 0; i < 4; ++i) {
@@ -100,25 +104,27 @@ int main() {
         if (data_ready) {
             data_ready = false;
 
+            // Una sola rafaga DMA para los dos sensores: la mitad de tiempo de
+            // bus y ambas mitades de la misma muestra del MPU.
             q16_16 accel_data[3];
-            mpu_read_accel_fixed(accel_data); // Ejecutado internamente bajo DMA
-
             q16_16 gyro_data[3];
-            mpu_read_gyro_fixed(gyro_data);   // Ejecutado internamente bajo DMA
+            mpu_read_imu_fixed(accel_data, gyro_data);
 
             // Paso de integracion real entre muestras: dar por hecho el nominal
-            // de 5 ms falsea la deriva y los angulos integrados si el bucle no
-            // corre exactamente a 200 Hz.
+            // del bucle falsea la deriva, los angulos integrados y las
+            // ganancias I y D si el bucle no corre exactamente a esa cadencia.
             const uint32_t sample_us = time_us_32();
             float dt_s = (float)(sample_us - last_sample_us) * 1e-6f;
             last_sample_us = sample_us;
             if (dt_s <= 0.0f || dt_s > 0.05f) {
-                dt_s = 0.005f; // primera muestra o pausa anormalmente larga
+                dt_s = NOMINAL_LOOP_DT_S; // primera muestra o pausa anormal
             }
 
+#if GYRO_DEBUG_ENABLED
             gyro_debug_feed(gyro_data, accel_data, dt_s);
+#endif
             attitude_estimate(accel_data, gyro_data, dt_s);
-            attitude_update(rc_data, gyro_data, &last_attitude_cmd);
+            attitude_update(rc_data, gyro_data, &last_attitude_cmd, dt_s);
             mixer_mix(&last_attitude_cmd, &last_motor_cmd);
         }
 
@@ -175,7 +181,9 @@ int main() {
         }
 
         // --- Debug de giroscopio y calibración (menú por puerto serie) ---
+#if GYRO_DEBUG_ENABLED
         gyro_debug_service(esc_armed);
+#endif
 
         // 3. Telemetría: GPS y batería se muestrean y se reenvían por CRSF al receptor
         gps_update();
@@ -186,7 +194,7 @@ int main() {
         // Cadencia contra un instante absoluto. Esperar segun el periodo
         // anterior no sirve: ese periodo ya incluia su propia espera, asi que
         // alternaba ciclos cortos y largos con un promedio menor a 5 ms.
-        next_loop_us += 5000;
+        next_loop_us += TARGET_LOOP_US;
         const int32_t remaining_us = (int32_t)(next_loop_us - time_us_32());
         if (remaining_us > 0) {
             sleep_us((uint32_t)remaining_us);

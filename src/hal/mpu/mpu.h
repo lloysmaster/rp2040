@@ -10,7 +10,10 @@
 #define MPU_REG_GYRO_XOUT_H  0x43
 #define MPU_REG_INT_PIN_CFG   0x37
 #define MPU_REG_INT_ENABLE    0x38
+#define MPU_REG_SMPLRT_DIV    0x19
+#define MPU_REG_CONFIG        0x1A
 #define MPU_REG_GYRO_CONFIG   0x1B
+#define MPU_REG_ACCEL_CONFIG2 0x1D
 #define MPU_REG_PWR_MGMT_1    0x6B
 #define MPU_REG_WHO_AM_I      0x75
 
@@ -65,6 +68,16 @@ void mpu_read_accel_fixed(q16_16 *output);
  * @param output Arreglo de 3 elementos q16_16.
  */
 void mpu_read_gyro_fixed(q16_16 *output);
+
+/**
+ * @brief Lee acelerómetro y giroscopio en una sola ráfaga DMA (registros
+ *        contiguos) y los convierte a Q16_16. Cuesta la mitad de tiempo de bus
+ *        que llamar a las dos lecturas por separado y ambas mitades pertenecen
+ *        a la misma muestra del sensor.
+ * @param accel_output Arreglo de 3 elementos q16_16 en g.
+ * @param gyro_output Arreglo de 3 elementos q16_16 en °/s.
+ */
+void mpu_read_imu_fixed(q16_16 *accel_output, q16_16 *gyro_output);
 
 /**
  * @brief Lee los 3 ejes crudos del giroscopio, sin escalar ni descontar el sesgo.
