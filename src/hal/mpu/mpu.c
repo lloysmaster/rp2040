@@ -16,6 +16,7 @@ static uint8_t dma_dummy_byte = 0x00;
 // ~112 us de espera, mas que todo el calculo del bucle junto.
 #define MPU_SPI_WRITE_HZ 1000000u
 #define MPU_SPI_READ_HZ  8000000u
+#define DEG_TO_RAD_F 0.01745329252f
 
 static float g_gyro_sensitivity = GYRO_SENSITIVITY_LSB_PER_DPS;
 static uint16_t g_gyro_fs_dps = GYRO_FULL_SCALE_DPS;
@@ -59,7 +60,7 @@ static void mpu_accel_to_fixed(const int16_t raw[3], q16_16 *output) {
 }
 
 static void mpu_gyro_to_fixed(const int16_t raw[3], q16_16 *output) {
-    const float inv_sensitivity = 1.0f / g_gyro_sensitivity;
+    const float inv_sensitivity = (1.0f / g_gyro_sensitivity) * DEG_TO_RAD_F;
     for (int i = 0; i < 3; ++i) {
         g_last_gyro_raw[i] = raw[i];
         const float corrected = (float)raw[i] - g_cal.gyro_bias_lsb[i];
