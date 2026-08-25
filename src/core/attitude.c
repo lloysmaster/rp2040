@@ -22,7 +22,6 @@ static float angle_roll = 0.0f;
 static float angle_pitch = 0.0f;
 static float angle_yaw = 0.0f;
 
-#define DEG_TO_RAD 0.01745329252f
 // Constante de tiempo del filtro complementario. Equivale al alpha 0.98 que se
 // usaba con el periodo fijo de 5 ms: tau = dt * alpha / (1 - alpha).
 #define ATTITUDE_COMPLEMENTARY_TAU_S 0.245f
@@ -116,9 +115,9 @@ void attitude_estimate(const q16_16 accel[3], const q16_16 gyro[3], float dt_s) 
     const float ay = q16_to_float(accel[1]);
     const float az = q16_to_float(accel[2]);
 
-    const float roll_rate = q16_to_float(gyro[0]) * DEG_TO_RAD;
-    const float pitch_rate = q16_to_float(gyro[1]) * DEG_TO_RAD;
-    const float yaw_rate = q16_to_float(gyro[2]) * DEG_TO_RAD;
+    const float roll_rate  = q16_to_float(gyro[0]); // Ya está en rad/s
+    const float pitch_rate = q16_to_float(gyro[1]); // Ya está en rad/s
+    const float yaw_rate   = q16_to_float(gyro[2]); // Ya está en rad/s
 
     // Predicción por integración del giroscopio
     float roll = angle_roll + roll_rate * dt_s;
