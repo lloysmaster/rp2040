@@ -7,6 +7,16 @@
 #include "hal/rx/crossfire.h"
 #include "core/flighMode.h"
 
+
+#define CRSF_CHANNEL_MIN 172
+#define CRSF_CHANNEL_MID 992
+#define CRSF_CHANNEL_MAX 1811
+
+// Define la tasa máxima de rotación deseada cuando el stick esté al 100%
+#define MAX_RATE_DPS     500.0f                 // Ejemplo: 500 °/s en fondo de escala
+#define DEG_TO_RAD_F     0.01745329252f         // Identico al usado en mpu.c
+#define MAX_RATE_RAD_S   (MAX_RATE_DPS * DEG_TO_RAD_F) // ~8.72 rad/s
+
 typedef struct {
     int32_t roll_output;
     int32_t pitch_output;

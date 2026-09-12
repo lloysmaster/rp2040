@@ -12,8 +12,10 @@
 #define GYRO_FULL_SCALE_DPS 500
 
 // Sensibilidad real del giroscopio en LSB/(°/s). Nominales del MPU6500:
-//   +-250 °/s -> 131.0   +-500 °/s -> 65.5
-//   +-1000 °/s -> 32.8   +-2000 °/s -> 16.4
+//   +-250 °/s -> 131.0 
+//   +-500 °/s -> 65.5
+//   +-1000 °/s -> 32.8 
+//   +-2000 °/s -> 16.4
 // Cada sensor difiere algunos puntos porcentuales del nominal: medirlo con el
 // debug de giro (tecla 'r') y copiar aquí el valor. Debe pertenecer al fondo de
 // escala elegido arriba; si no, se ignora y se usa el nominal.

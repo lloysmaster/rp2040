@@ -1,10 +1,7 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "hardware/gpio.h"
-
-// Asegúrate de que las rutas a los headers coincidan con la estructura de tus carpetas
 #include "hal/mpu/mpu.h"
-
 #include "hal/rx/crossfire.h" 
 #include "math/fixed_point.h"
 #include "core/attitude.h"
@@ -25,7 +22,7 @@
 
 volatile bool data_ready = false;
 
-// Callback de la interrupción externa del GPIO (MPU DRDY)
+//(MPU DRDY)
 void gpio_callback(uint gpio, uint32_t events) {
     if (gpio == 14) { // Pin DRDY
         data_ready = true;
@@ -33,12 +30,12 @@ void gpio_callback(uint gpio, uint32_t events) {
 }
 
 int main() {
-    // --- Inicialización de stdio para Debug (USB/UART) ---
+    //debug serial
     stdio_init_all();
-    sleep_ms(2000); // Pausa breve para permitir la conexión del monitor serie
+    sleep_ms(2000); // Pausa breve
     printf("[DEBUG] Sistema iniciando...\n");
 
-    // --- Inicialización del sensor MPU6500 ---
+    // --- Inicio del sensor MPU6500
     mpu_config_t cfg = {
         .spi = spi1, 
         .pin_cs = 13, 
@@ -54,7 +51,7 @@ int main() {
     printf("[DEBUG] MPU6500 inicializado\n");
     mpu_enable_drdy();
 
-    // Calibración de sesgo en reposo: el dron debe estar quieto y nivelado.
+    // Calibración de sesgo en reposo: el dron debe estar quieto y sin movimiento durante esta fase. Se promedian varias muestras y se descartan si hay movimiento.
     printf("[DEBUG] Calibrando sensores: no mover el dron...\n");
     if (mpu_calibrate(GYRO_CALIBRATION_SAMPLES, GYRO_CALIBRATION_MAX_SPREAD_LSB)) {
         const mpu_calibration_t *cal = mpu_get_calibration();
@@ -70,15 +67,15 @@ int main() {
 
     // --- Inicialización de periféricos ---
     crsf_init();
-    gps_init();
+    //gps_init();
     battery_init();
     telemetry_init();
     attitude_init();
     attitude_set_mode(FLIGHT_MODE_ACRO);
     mixer_init();
-#if GYRO_DEBUG_ENABLED
-    gyro_debug_init();
-#endif
+    #if GYRO_DEBUG_ENABLED
+        gyro_debug_init();
+    #endif
     dshot_init(MOTOR_BASE_PIN);
     
     for (int i = 0; i < 4; ++i) {
@@ -120,10 +117,10 @@ int main() {
                 dt_s = NOMINAL_LOOP_DT_S; // primera muestra o pausa anormal
             }
 
-#if GYRO_DEBUG_ENABLED
-            gyro_debug_feed(gyro_data, accel_data, dt_s);
-#endif
-            attitude_estimate(accel_data, gyro_data, dt_s);
+            #if GYRO_DEBUG_ENABLED
+                gyro_debug_feed(gyro_data, accel_data, dt_s);
+            #endif
+            //attitude_estimate(accel_data, gyro_data, dt_s);
             attitude_update(rc_data, gyro_data, &last_attitude_cmd, dt_s);
             mixer_mix(&last_attitude_cmd, &last_motor_cmd);
         }
@@ -151,7 +148,7 @@ int main() {
             }
         } else {
             bool arm_switch = (rc_data->channels[RC_CHANNEL_ARM] > 1500);
-            bool throttle_low = (rc_data->channels[RC_CHANNEL_THROTTLE] < 1050);
+            bool throttle_low = (rc_data->channels[RC_CHANNEL_THROTTLE] < 175);
 
             if (!esc_armed) {
                 if (arm_switch && throttle_low) {
@@ -181,12 +178,12 @@ int main() {
         }
 
         // --- Debug de giroscopio y calibración (menú por puerto serie) ---
-#if GYRO_DEBUG_ENABLED
-        gyro_debug_service(esc_armed);
-#endif
+        #if GYRO_DEBUG_ENABLED
+            gyro_debug_service(esc_armed);
+        #endif
 
         // 3. Telemetría: GPS y batería se muestrean y se reenvían por CRSF al receptor
-        gps_update();
+        //gps_update();
         battery_update();
         telemetry_set_armed(esc_armed);
         telemetry_update();

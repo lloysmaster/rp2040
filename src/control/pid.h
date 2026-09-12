@@ -6,9 +6,10 @@ typedef struct {
     float ki;
     float kd;
     float integral;
-    float prev_error;
+    float prev_measurement;
     float max_output;
     float max_integral;
+    float max_i_term; // Limite directo sobre la contribución I
 } pid_t;
 
 void pid_init(pid_t *pid, float kp, float ki, float kd, float max_output, float max_integral);

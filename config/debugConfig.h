@@ -7,7 +7,7 @@
 // impresiones periodicas pueden bloquear el USB varios cientos de us. Poner a 0
 // para dejarlo fuera del camino critico cuando se busque la maxima cadencia.
 #ifndef GYRO_DEBUG_ENABLED
-#define GYRO_DEBUG_ENABLED 1
+#define GYRO_DEBUG_ENABLED 0
 #endif
 
 #endif // CONFIG_DEBUGCONFIG_H

@@ -25,7 +25,6 @@ typedef struct {
     uint8_t pin_mosi;
     uint8_t pin_miso;
     uint8_t pin_drdy;
-    // Fondo de escala del giroscopio en °/s: 250, 500, 1000 o 2000.
     uint16_t gyro_full_scale_dps;
     // LSB por °/s medidos para ese fondo de escala (nominal 131.0, 65.5, 32.8
     // o 16.4). Se ignora si no pertenece al fondo de escala configurado.
@@ -80,7 +79,7 @@ void mpu_read_gyro_fixed(q16_16 *output);
 void mpu_read_imu_fixed(q16_16 *accel_output, q16_16 *gyro_output);
 
 /**
- * @brief Lee los 3 ejes crudos del giroscopio, sin escalar ni descontar el sesgo.
+ * @brief Lee los 3 ejes crudos del giroscopio, entrega valores en rad/s.
  */
 void mpu_read_gyro_raw(int16_t *output);
 

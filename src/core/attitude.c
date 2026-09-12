@@ -6,6 +6,7 @@
 #include "hal/esc/dshot.h"
 #include "config/rcMap.h"
 
+
 typedef struct {
     float prev_filtered[3];
 } filter_state_t;
@@ -27,7 +28,7 @@ static float angle_yaw = 0.0f;
 #define ATTITUDE_COMPLEMENTARY_TAU_S 0.245f
 // Corte del filtro de velocidades angulares. Equivale al alpha 0.18 que se
 // usaba a 200 Hz: fc = (1 - alpha) / (2 * pi * dt * alpha).
-#define ATTITUDE_RATE_FILTER_CUTOFF_HZ 7.0f
+#define ATTITUDE_RATE_FILTER_CUTOFF_HZ 80.0f
 #define PI_F 3.14159265359f
 
 static float q16_to_float(q16_16 value) {
@@ -35,18 +36,24 @@ static float q16_to_float(q16_16 value) {
 }
 
 static float rc_to_rate(uint16_t channel) {
-    int32_t centered = (int32_t)channel - 992;
-    if (centered > 250) {
-        centered = 250;
-    } else if (centered < -250) {
-        centered = -250;
+    // 1. Clampear a límites físicos del receptor
+    if (channel < CRSF_CHANNEL_MIN) channel = CRSF_CHANNEL_MIN;
+    if (channel > CRSF_CHANNEL_MAX) channel = CRSF_CHANNEL_MAX;
+
+    // 2. Normalizar de -1.0f a +1.0f sin deadband
+    float norm = 0.0f;
+    if (channel >= CRSF_CHANNEL_MID) {
+        norm = (float)(channel - CRSF_CHANNEL_MID) / (float)(CRSF_CHANNEL_MAX - CRSF_CHANNEL_MID);
+    } else {
+        norm = (float)(channel - CRSF_CHANNEL_MID) / (float)(CRSF_CHANNEL_MID - CRSF_CHANNEL_MIN);
     }
 
-    if (centered > -20 && centered < 20) {
-        centered = 0;
-    }
+    // Guardrail por si hay jitter fuera de rango
+    if (norm > 1.0f) norm = 1.0f;
+    if (norm < -1.0f) norm = -1.0f;
 
-    return (float)centered * 0.25f;
+    // 3. Mapeo directo a rad/s
+    return norm * MAX_RATE_RAD_S;
 }
 
 // Un alpha fijo ata el corte del filtro al periodo del bucle: al cambiar la
@@ -57,7 +64,7 @@ static float lowpass_alpha(float cutoff_hz, float dt_s) {
     return dt_s / (rc + dt_s);
 }
 
-static void apply_notch_filter(const float raw[3], float filtered[3], float alpha) {
+static void apply_lowpass_filter(const float raw[3], float filtered[3], float alpha) {
     for (int i = 0; i < 3; ++i) {
         filter_state.prev_filtered[i] = filter_state.prev_filtered[i] + alpha * (raw[i] - filter_state.prev_filtered[i]);
         filtered[i] = filter_state.prev_filtered[i];
@@ -79,15 +86,15 @@ static void apply_sensor_filter(const q16_16 gyro[3], float filtered[3], float d
         case FLIGHT_MODE_STABILIZED:
         case FLIGHT_MODE_ACRO:
         default:
-            apply_notch_filter(raw, filtered,
+            apply_lowpass_filter(raw, filtered,
                                lowpass_alpha(ATTITUDE_RATE_FILTER_CUTOFF_HZ, dt_s));
             break;
     }
 }
 
 void attitude_init(void) {
-    pid_init(&roll_pid, 0.25f, 0.01f, 0.002f, 500.0f, 2000.0f);
-    pid_init(&pitch_pid, 0.25f, 0.01f, 0.002f, 500.0f, 2000.0f);
+    pid_init(&roll_pid, 0.26f, 0.01f, 0.002f, 500.0f, 2000.0f);
+    pid_init(&pitch_pid, 0.26f, 0.01f, 0.002f, 500.0f, 2000.0f);
     pid_init(&yaw_pid, 0.18f, 0.005f, 0.001f, 300.0f, 1500.0f);
     for (int i = 0; i < 3; ++i) {
         filter_state.prev_filtered[i] = 0.0f;
