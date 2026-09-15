@@ -1,4 +1,5 @@
 #include "mixer.h"
+#include "hal/esc/dshot.h"
 
 void mixer_init(void) {
 }
@@ -20,14 +21,6 @@ void mixer_mix(const attitude_cmd_t *attitude, mixer_output_t *output) {
     int32_t pitch = attitude->pitch_output;
     int32_t yaw = attitude->yaw_output;
 
-    // If throttle is zero, force all motor outputs to zero to avoid
-    // sending tiny PID-induced commands while disarmed/min throttle.
-    if (throttle == 0) {
-        for (int i = 0; i < 4; ++i) {
-            output->motor[i] = 0;
-        }
-        return;
-    }
 
     // Distribución para el quad en X soldado como:
     //   motor[0]=M1 atrás-derecha   motor[1]=M2 adelante-derecha
@@ -35,6 +28,7 @@ void mixer_mix(const attitude_cmd_t *attitude, mixer_output_t *output) {
     // roll+ sube el lado derecho, pitch+ sube los traseros (morro arriba) y
     // yaw+ acelera la diagonal que gira en horario, igual que los signos del
     // giroscopio que consume el PID.
+
     const int32_t yaw_a = MIXER_YAW_CW_DIAGONAL_M1_M4 ? yaw : -yaw;
 
     output->motor[0] = throttle + roll + pitch + yaw_a;
@@ -42,11 +36,29 @@ void mixer_mix(const attitude_cmd_t *attitude, mixer_output_t *output) {
     output->motor[2] = throttle - roll + pitch - yaw_a;
     output->motor[3] = throttle - roll - pitch + yaw_a;
 
+    // 1. Encontrar el valor máximo y mínimo absoluto entre los 4 motores
+    int32_t max_val = output->motor[0];
+    int32_t min_val = output->motor[0];
+
+    for (int i = 1; i < 4; ++i) {
+        if (output->motor[i] > max_val) max_val = output->motor[i];
+        if (output->motor[i] < min_val) min_val = output->motor[i];
+    }
+
+    // 2. Si el valor máximo supera el límite superior (ej. 1000), bajamos todos
+    int32_t offset = 0;
+   if (max_val > 2047) {
+    offset = max_val - 2047;
+} else if (min_val < (int32_t)DSHOT_MIN_THROTTLE) {
+    offset = min_val - (int32_t)DSHOT_MIN_THROTTLE; // O manejar el desborde inferior según tu idle deseado
+}
+
+    // Aplicar el desplazamiento a los motores
     for (int i = 0; i < 4; ++i) {
-        if (output->motor[i] < 0) {
-            output->motor[i] = 0;
-        } else if (output->motor[i] > 1000) {
-            output->motor[i] = 1000;
-        }
+        output->motor[i] -= offset;
+        
+        // Saneamiento final por seguridad estricta
+        if (output->motor[i] < (int32_t)DSHOT_MIN_THROTTLE) output->motor[i] = (int32_t)DSHOT_MIN_THROTTLE;
+        if (output->motor[i] > 2047) output->motor[i] = 2047;
     }
 }

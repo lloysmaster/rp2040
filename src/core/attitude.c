@@ -190,12 +190,12 @@ void attitude_update(const crsf_data_t *rc_data, const q16_16 gyro[3],
     const uint16_t throttle_min = 172u;
     const uint16_t throttle_max = 1811u;
     if (rc_throttle <= throttle_min) {
-        output->throttle = (int32_t)DSHOT_MIN_THROTTLE;
-    } else {
-        output->throttle = (int32_t)((rc_throttle - throttle_min) * 1000u / (throttle_max - throttle_min));
-        if (output->throttle < (int32_t)DSHOT_MIN_THROTTLE) {
-            output->throttle = (int32_t)DSHOT_MIN_THROTTLE;
-        }
-    }
+    output->throttle = (int32_t)DSHOT_MIN_THROTTLE;
+} else {
+    // Mapeo directo al rango DShot (DSHOT_MIN_THROTTLE a 2047)
+    output->throttle = (int32_t)(DSHOT_MIN_THROTTLE + 
+        ((uint32_t)(rc_throttle - throttle_min) * (2047u - DSHOT_MIN_THROTTLE)) / 
+        (throttle_max - throttle_min));
+}
     output->enabled = rc_data->is_connected;
 }

@@ -1,4 +1,4 @@
--arreglar clipping de mixer
+-arreglar clipping de mixer ./
 -reconfigurar mpu/preparar para 2k/4khz de loop
 -preparar protocolo crossfire mas rapido para reducir los calculos nesesarios
 -usar mas de 1 lowpassfilter/ pt1(200 Hz - 250 Hz, suponiendo rigido y limpio) y pt2 (400 Hz - 500 Hz,)

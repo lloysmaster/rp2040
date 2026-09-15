@@ -129,7 +129,7 @@ int main() {
             if (!esc_armed) {
                 esc_throttle[i] = 0;
             } else {
-                uint32_t val = (uint32_t)((last_motor_cmd.motor[i] * 2047u) / 1000u);
+                uint32_t val = (uint32_t)(last_motor_cmd.motor[i]);
                 if (val > 2047u) val = 2047u;
                 if (val < SAFE_ARMED_IDLE_THROTTLE) val = SAFE_ARMED_IDLE_THROTTLE;
                 esc_throttle[i] = (uint16_t)val;
