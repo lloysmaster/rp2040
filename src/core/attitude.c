@@ -35,6 +35,14 @@ static float q16_to_float(q16_16 value) {
     return (float)value / 65536.0f;
 }
 
+void attitude_reset_pids(void) {
+    pid_reset(&roll_pid);
+    pid_reset(&pitch_pid);
+    pid_reset(&yaw_pid);
+    for (int i = 0; i < 3; ++i) {
+        filter_state.prev_filtered[i] = 0.0f;
+    }
+}
 static float rc_to_rate(uint16_t channel) {
     // 1. Clampear a límites físicos del receptor
     if (channel < CRSF_CHANNEL_MIN) channel = CRSF_CHANNEL_MIN;
@@ -93,8 +101,8 @@ static void apply_sensor_filter(const q16_16 gyro[3], float filtered[3], float d
 }
 
 void attitude_init(void) {
-    pid_init(&roll_pid, 0.26f, 0.01f, 0.002f, 500.0f, 2000.0f);
-    pid_init(&pitch_pid, 0.26f, 0.01f, 0.002f, 500.0f, 2000.0f);
+    pid_init(&roll_pid, 0.50f, 0.01f, 0.002f, 500.0f, 2000.0f);
+    pid_init(&pitch_pid, 0.50f, 0.01f, 0.002f, 500.0f, 2000.0f);
     pid_init(&yaw_pid, 0.18f, 0.005f, 0.001f, 300.0f, 1500.0f);
     for (int i = 0; i < 3; ++i) {
         filter_state.prev_filtered[i] = 0.0f;

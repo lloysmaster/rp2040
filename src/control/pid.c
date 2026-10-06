@@ -12,6 +12,12 @@ void pid_init(pid_t *pid, float kp, float ki, float kd, float max_output, float 
     pid->max_i_term = max_i_term; // Limite directo sobre la contribución I
 }
 
+void pid_reset(pid_t *pid) {
+    if (pid == NULL) return;
+    pid->integral = 0.0f;
+    pid->prev_measurement = 0.0f;
+}
+
 float pid_update(pid_t *pid, float setpoint, float measurement, float dt_s) {
     if (pid == NULL || dt_s <= 0.0f) return 0.0f;
 

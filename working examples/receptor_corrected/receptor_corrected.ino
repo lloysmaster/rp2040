@@ -2,18 +2,31 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <esp_idf_version.h>
-
+#include <TinyGPSPlus.h>
 #define CRSF_BAUDRATE 420000
+#define GPS_BAUDRATE  9600
+
+// ===== Configuración del GPS GY-NEO6MV2 =====
+TinyGPSPlus gps;
+HardwareSerial gpsSerial(1); // Usamos UART1 para el GPS (Pines RX: 4, TX: 5 por defecto)
+
+// ===== Paquete de configuración PID recibido por ESP-NOW =====
+typedef struct __attribute__((packed)) {
+  uint8_t type;         // 0x03 = configuración PID
+  float kp;
+  float ki;
+  float kd;
+} pid_packet_t;
 
 // ===== Paquete de canales RC recibido por ESP-NOW (desde el emisor) =====
 typedef struct __attribute__((packed)) {
-  uint8_t type;        // 0x01 = canales RC
+  uint8_t type;         // 0x01 = canales RC
   uint16_t ch[16];
 } rc_packet_t;
 
 // ===== Paquete de telemetria enviado por ESP-NOW (hacia el emisor) =====
 typedef struct __attribute__((packed)) {
-  uint8_t type;         // 0x02 = telemetria
+  uint8_t type;          // 0x02 = telemetria
   float batteryVoltage;
   float batteryCurrent;
   uint32_t batteryCapacity;
@@ -36,36 +49,36 @@ typedef struct __attribute__((packed)) {
 } telemetry_packet_t;
 
 uint16_t channels[16] = {992, 992, 992, 992, 992, 992, 992, 992,
-                          992, 992, 992, 992, 992, 992, 992, 992};
+                         992, 992, 992, 992, 992, 992, 992, 992};
 
 telemetry_packet_t telemetry = {0x02};
 
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 // ===== Calidad del enlace ESP-NOW, medida en el receptor =====
-// El FC no genera tramas LINK_STATISTICS: el enlace de radio real es el
-// ESP-NOW entre emisor y receptor, por lo que estas metricas se calculan aqui.
-#define RC_PACKET_PERIOD_MS   20   // el emisor envia canales a 50Hz
-#define LINK_WINDOW_MS        1000 // ventana de medicion de LQ
+#define RC_PACKET_PERIOD_MS   20   
+#define LINK_WINDOW_MS        1000 
 #define LINK_EXPECTED_PACKETS (LINK_WINDOW_MS / RC_PACKET_PERIOD_MS)
-#define LINK_TIMEOUT_MS       500  // sin paquetes RC => enlace caido
+#define LINK_TIMEOUT_MS       500  
 
-volatile int8_t   uplinkRSSI = 0;          // dBm del ultimo paquete RC recibido
-volatile int8_t   uplinkNoiseFloor = -96;  // dBm de piso de ruido informado por el PHY
+volatile int8_t   uplinkRSSI = 0;         
+volatile int8_t   uplinkNoiseFloor = -96;  
 volatile uint16_t uplinkPacketsInWindow = 0;
 volatile uint32_t lastRcRxMillis = 0;
 volatile uint16_t telemetrySentInWindow = 0;
 volatile uint16_t telemetryAckedInWindow = 0;
 
 uint32_t lastLinkWindowMillis = 0;
-uint8_t  uplinkQuality = 0;   // % de paquetes RC recibidos respecto de los esperados
-uint8_t  downlinkQuality = 0; // % de tramas de telemetria aceptadas por el radio
+uint8_t  uplinkQuality = 0;   
+uint8_t  downlinkQuality = 0; 
 uint8_t  txPowerDbm = 0;
 bool     linkUp = false;
 
 // ---------- ESP-NOW: recepcion de canales RC desde el emisor ----------
 void OnDataRecv(const esp_now_recv_info_t * info, const uint8_t *incoming_data, int len) {
   if (len < 1) return;
+
+  // 1. Paquete de Canales RC (0x01)
   if (incoming_data[0] == 0x01 && len == sizeof(rc_packet_t)) {
     rc_packet_t pkt;
     memcpy(&pkt, incoming_data, sizeof(pkt));
@@ -77,17 +90,23 @@ void OnDataRecv(const esp_now_recv_info_t * info, const uint8_t *incoming_data, 
     }
     uplinkPacketsInWindow++;
     lastRcRxMillis = millis();
+  }
 
-    Serial.print("Throttle: ");
-    Serial.println(channels[2]);
+  // 2. Paquete de Configuración PID (0x03)
+  else if (incoming_data[0] == 0x03 && len == sizeof(pid_packet_t)) {
+    pid_packet_t pidPkt;
+    memcpy(&pidPkt, incoming_data, sizeof(pidPkt));
+
+    Serial.print("PID Recibido -> Kp: ");
+    Serial.print(pidPkt.kp);
+    Serial.print(" | Ki: ");
+    Serial.print(pidPkt.ki);
+    Serial.print(" | Kd: ");
+    Serial.println(pidPkt.kd);
   }
 }
 
-// ---------- ESP-NOW: resultado del envio de telemetria (calidad de bajada) ----------
-// Con direccion de broadcast el radio no espera ACK, por lo que este porcentaje
-// refleja que la capa de radio acepto la trama, no que el emisor la recibio.
-// La firma del callback cambio en IDF 5.4 (core ESP32 3.2+): antes recibia la MAC
-// del destino, ahora una estructura con la informacion de la transmision.
+// ---------- ESP-NOW: resultado del envio de telemetria ----------
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 0)
 void OnDataSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status) {
 #else
@@ -103,7 +122,6 @@ static uint8_t percent(uint32_t part, uint32_t total) {
   return pct > 100 ? 100 : (uint8_t)pct;
 }
 
-// Potencia de transmision del radio WiFi en dBm (el driver la reporta en 0.25dBm)
 static uint8_t leerPotenciaTxDbm() {
   int8_t power_quarter_dbm = 0;
   if (esp_wifi_get_max_tx_power(&power_quarter_dbm) != ESP_OK) return 0;
@@ -147,11 +165,36 @@ void actualizarCalidadEnlace() {
   if (snr < -128) snr = -128;
   if (snr > 127) snr = 127;
 
-  telemetry.linkRSSI1   = rssi < 0 ? (uint8_t)(-rssi) : 0; // convencion CRSF: dBm en positivo
-  telemetry.linkRSSI2   = 0;                               // el ESP32 expone una sola antena
+  telemetry.linkRSSI1   = rssi < 0 ? (uint8_t)(-rssi) : 0; 
+  telemetry.linkRSSI2   = 0;                           
   telemetry.linkQuality = uplinkQuality;
   telemetry.linkSNR     = (int8_t)snr;
   telemetry.linkTXPower = txPowerDbm;
+}
+
+// ---------- Lectura del GPS GY-NEO6MV2 ----------
+void leerGPSDirecto() {
+  while (gpsSerial.available()) {
+    gps.encode(gpsSerial.read());
+  }
+
+  // Actualizamos la estructura de telemetría si hay datos nuevos y válidos del GPS
+  if (gps.location.isValid()) {
+    telemetry.gpsLat = (float)gps.location.lat();
+    telemetry.gpsLon = (float)gps.location.lng();
+  }
+  if (gps.speed.isValid()) {
+    telemetry.gpsSpeed = (float)gps.speed.kmph(); // Velocidad en km/h
+  }
+  if (gps.course.isValid()) {
+    telemetry.gpsHeading = (float)gps.course.deg(); // Rumbo en grados
+  }
+  if (gps.altitude.isValid()) {
+    telemetry.gpsAltitude = (int16_t)gps.altitude.meters(); // Altitud en metros
+  }
+  if (gps.satellites.isValid()) {
+    telemetry.gpsSatellites = (uint8_t)gps.satellites.value(); // Cantidad de satélites
+  }
 }
 
 // ---------- CRC8 CRSF (poly 0xD5) ----------
@@ -186,7 +229,6 @@ void enviarTramaCRSF() {
       bits_available -= 8;
     }
   }
-  // El CRC cubre tipo + payload (no el sync ni el byte de largo)
   frame[25] = crsf_crc8(&frame[2], 23);
   Serial2.write(frame, 26);
 }
@@ -199,13 +241,12 @@ uint8_t crsfLen = 0;
 enum { CRSF_WAIT_SYNC, CRSF_WAIT_LEN, CRSF_WAIT_DATA } crsfState = CRSF_WAIT_SYNC;
 
 void parseCRSFFrame(uint8_t *frame, uint8_t frameLen) {
-  // frame[0] = tipo ; frame[1..frameLen-2] = payload ; frame[frameLen-1] = crc
   uint8_t type = frame[0];
   uint8_t *payload = &frame[1];
   uint8_t payloadLen = frameLen - 2;
 
   uint8_t crcCalc = crsf_crc8(frame, frameLen - 1);
-  if (crcCalc != frame[frameLen - 1]) return; // trama corrupta, descartar
+  if (crcCalc != frame[frameLen - 1]) return; 
 
   switch (type) {
     case 0x08: // BATTERY_SENSOR
@@ -217,45 +258,32 @@ void parseCRSFFrame(uint8_t *frame, uint8_t frameLen) {
       }
       break;
 
-    case 0x02: // GPS
-      if (payloadLen >= 15) {
-        int32_t lat = ((int32_t)payload[0] << 24) | (payload[1] << 16) | (payload[2] << 8) | payload[3];
-        int32_t lon = ((int32_t)payload[4] << 24) | (payload[5] << 16) | (payload[6] << 8) | payload[7];
-        telemetry.gpsLat       = lat / 1e7f;
-        telemetry.gpsLon       = lon / 1e7f;
-        telemetry.gpsSpeed     = ((payload[8] << 8) | payload[9]) / 10.0f;     // km/h
-        telemetry.gpsHeading   = ((payload[10] << 8) | payload[11]) / 100.0f; // grados
-        telemetry.gpsAltitude  = (int16_t)(((payload[12] << 8) | payload[13]) - 1000); // metros
-        telemetry.gpsSatellites = payload[14];
-      }
-      break;
+    // Nota: El caso 0x02 (GPS) del FC se ha omitido o sobreescrito intencionalmente 
+    // porque ahora el GPS se lee directamente desde el GY-NEO6MV2 conectado al ESP32.
 
     case 0x1E: // ATTITUDE
       if (payloadLen >= 6) {
         int16_t pitch = (payload[0] << 8) | payload[1];
         int16_t roll  = (payload[2] << 8) | payload[3];
         int16_t yaw   = (payload[4] << 8) | payload[5];
-        telemetry.attitudePitch = pitch / 10000.0f; // radianes
+        telemetry.attitudePitch = pitch / 10000.0f; 
         telemetry.attitudeRoll  = roll  / 10000.0f;
         telemetry.attitudeYaw   = yaw   / 10000.0f;
       }
       break;
 
-    // 0x14 LINK_STATISTICS no se parsea: el enlace de radio es el ESP-NOW de este
-    // receptor, asi que las metricas de calidad se miden localmente y se envian al FC.
-
-    case 0x21: // FLIGHT_MODE (string ASCII terminada en \0)
+    case 0x21: // FLIGHT_MODE
       {
         uint8_t n = payloadLen < sizeof(telemetry.flightMode) - 1
-                      ? payloadLen
-                      : sizeof(telemetry.flightMode) - 1;
+                    ? payloadLen
+                    : sizeof(telemetry.flightMode) - 1;
         memcpy(telemetry.flightMode, payload, n);
         telemetry.flightMode[n] = '\0';
       }
       break;
 
     default:
-      break; // otros tipos de trama se ignoran (heartbeat, device info, etc)
+      break; 
   }
 }
 
@@ -265,7 +293,6 @@ void leerTelemetriaCRSF() {
 
     switch (crsfState) {
       case CRSF_WAIT_SYNC:
-        // 0xC8 = direccion FC, 0xEA = direccion Radio/TX (depende del firmware)
         if (b == 0xC8 || b == 0xEA) {
           crsfIdx = 0;
           crsfState = CRSF_WAIT_LEN;
@@ -273,9 +300,9 @@ void leerTelemetriaCRSF() {
         break;
 
       case CRSF_WAIT_LEN:
-        crsfLen = b; // largo = tipo + payload + crc
+        crsfLen = b; 
         if (crsfLen < 2 || crsfLen > CRSF_MAX_FRAME_LEN - 1) {
-          crsfState = CRSF_WAIT_SYNC; // largo invalido, reiniciar
+          crsfState = CRSF_WAIT_SYNC; 
         } else {
           crsfIdx = 0;
           crsfState = CRSF_WAIT_DATA;
@@ -293,22 +320,22 @@ void leerTelemetriaCRSF() {
   }
 }
 
-// ---------- Envio de LINK_STATISTICS al FC (calidad del enlace RC) ----------
+// ---------- Envio de LINK_STATISTICS al FC ----------
 void enviarLinkStatsCRSF() {
   uint8_t frame[14];
   frame[0] = 0xC8; // Sync
-  frame[1] = 12;   // Largo: tipo + 10 bytes de payload + crc
+  frame[1] = 12;   
   frame[2] = 0x14; // Tipo: LINK_STATISTICS
 
-  frame[3]  = telemetry.linkRSSI1;   // RSSI de subida antena 1 (dBm positivo)
-  frame[4]  = telemetry.linkRSSI2;   // RSSI de subida antena 2
-  frame[5]  = telemetry.linkQuality; // LQ de subida en %
+  frame[3]  = telemetry.linkRSSI1;   
+  frame[4]  = telemetry.linkRSSI2;   
+  frame[5]  = telemetry.linkQuality; 
   frame[6]  = (uint8_t)telemetry.linkSNR;
-  frame[7]  = 0;                     // antena activa (unica)
-  frame[8]  = 0;                     // modo RF (no aplica en ESP-NOW)
-  frame[9]  = telemetry.linkTXPower; // potencia de transmision en dBm
-  frame[10] = telemetry.linkRSSI1;   // RSSI de bajada: mismo enlace fisico
-  frame[11] = downlinkQuality;       // LQ de bajada (telemetria confirmada)
+  frame[7]  = 0;                     
+  frame[8]  = 0;                     
+  frame[9]  = telemetry.linkTXPower; 
+  frame[10] = telemetry.linkRSSI1;   
+  frame[11] = downlinkQuality;       
   frame[12] = (uint8_t)telemetry.linkSNR;
 
   frame[13] = crsf_crc8(&frame[2], 11);
@@ -318,7 +345,7 @@ void enviarLinkStatsCRSF() {
 // ---------- Envio periodico de telemetria al emisor por ESP-NOW ----------
 unsigned long lastTelemetrySend = 0;
 void enviarTelemetriaESPNOW() {
-  if (millis() - lastTelemetrySend >= 50) { // ~20Hz, de sobra para telemetria
+  if (millis() - lastTelemetrySend >= 50) { // ~20Hz
     esp_now_send(broadcastAddress, (uint8_t*)&telemetry, sizeof(telemetry));
     lastTelemetrySend = millis();
   }
@@ -326,7 +353,11 @@ void enviarTelemetriaESPNOW() {
 
 void setup() {
   Serial.begin(115200);
-  Serial2.begin(CRSF_BAUDRATE, SERIAL_8N1, 16, 17);
+  Serial2.begin(CRSF_BAUDRATE, SERIAL_8N1, 16, 17); // CRSF en pines 16 (RX) y 17 (TX)
+  
+  // Inicializamos el puerto Serial1 para el GY-NEO6MV2
+  // Puedes cambiar los pines 4 (RX) y 5 (TX) según tu cableado físico
+  gpsSerial.begin(GPS_BAUDRATE, SERIAL_8N1, 4, 5); 
 
   Serial.print("MAC del Receptor: ");
   Serial.println(WiFi.macAddress());
@@ -334,7 +365,7 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   delay(100);
-  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE); // debe coincidir con el emisor
+  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE); 
 
   if (esp_now_init() != ESP_OK) {
     Serial.println("Error inicializando ESP-NOW");
@@ -356,22 +387,23 @@ void setup() {
   txPowerDbm = leerPotenciaTxDbm();
   lastLinkWindowMillis = millis();
 
-  Serial.println("Receptor listo: RC por ESP-NOW -> CRSF al FC, y telemetria CRSF -> ESP-NOW al emisor.");
+  Serial.println("Receptor listo con GPS Directo (GY-NEO6MV2), RC por ESP-NOW y CRSF al FC.");
 }
 
 unsigned long lastSendTime = 0;
 unsigned long lastLinkStatsSend = 0;
 void loop() {
-  leerTelemetriaCRSF();       // 1. Leer telemetria que llega del FC por Serial2
-  actualizarCalidadEnlace();  // 2. Medir RSSI/LQ/SNR del enlace ESP-NOW
-  enviarTelemetriaESPNOW();   // 3. Reenviar la telemetria al emisor cuando corresponda
+  leerTelemetriaCRSF();       // 1. Leer telemetria del FC (Batería, Actitud, etc.)
+  leerGPSDirecto();           // 2. Leer y parsear datos del GY-NEO6MV2 localmente
+  actualizarCalidadEnlace();  // 3. Medir RSSI/LQ/SNR del enlace ESP-NOW
+  enviarTelemetriaESPNOW();   // 4. Reenviar la telemetria completa al emisor
 
-  if (millis() - lastSendTime >= 10) { // 4. Enviar canales RC al FC a 100Hz
+  if (millis() - lastSendTime >= 10) { // 5. Enviar canales RC al FC a 100Hz
     enviarTramaCRSF();
     lastSendTime = millis();
   }
 
-  if (millis() - lastLinkStatsSend >= 100) { // 5. Informar la calidad del enlace al FC a 10Hz
+  if (millis() - lastLinkStatsSend >= 100) { // 6. Informar la calidad del enlace al FC a 10Hz
     enviarLinkStatsCRSF();
     lastLinkStatsSend = millis();
   }

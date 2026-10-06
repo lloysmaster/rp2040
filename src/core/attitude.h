@@ -28,6 +28,7 @@ typedef struct {
 void attitude_init(void);
 void attitude_set_mode(flight_mode_t mode);
 flight_mode_t attitude_get_mode(void);
+void attitude_reset_pids(void);
 // dt_s es el tiempo real transcurrido desde la muestra anterior: los PID y el
 // filtro de velocidades lo necesitan para que sus ganancias y su frecuencia de
 // corte no dependan de la cadencia del bucle.

@@ -12,7 +12,7 @@
 #define BATTERY_CURRENT_ADC_INPUT 1
 
 // Poner en 0 si no hay sensor de corriente conectado (se reporta 0 A)
-#define BATTERY_CURRENT_SENSOR_ENABLED 1
+#define BATTERY_CURRENT_SENSOR_ENABLED 0
 
 // Referencia y resolución del ADC de la RP2040
 #define BATTERY_ADC_VREF_V 3.3f
@@ -20,7 +20,7 @@
 
 // Relación del divisor: Vbat = Vadc * BATTERY_VOLTAGE_DIVIDER
 // Ejemplo típico para 6S con R1=100k y R2=10k -> (100k + 10k) / 10k = 11.0
-#define BATTERY_VOLTAGE_DIVIDER 11.0f
+#define BATTERY_VOLTAGE_DIVIDER 4.0303f
 
 // Sensor de corriente: salida lineal (ej. ACS712 / sensor del PDB)
 #define BATTERY_CURRENT_OFFSET_V   0.0f   // Tensión de salida con 0 A

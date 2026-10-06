@@ -143,6 +143,7 @@ int main() {
                     printf("[DEBUG] RC Desconectado: Motores desarmados por seguridad\n");
                 }
             }
+            attitude_reset_pids();
             for (int i = 0; i < 4; ++i) {
                 dshot_set_throttle(i, 0);
             }
@@ -151,6 +152,7 @@ int main() {
             bool throttle_low = (rc_data->channels[RC_CHANNEL_THROTTLE] < 175);
 
             if (!esc_armed) {
+                attitude_reset_pids();
                 if (arm_switch && throttle_low) {
                     if (dshot_arm()) {
                         esc_armed = true;
@@ -164,6 +166,7 @@ int main() {
                         esc_armed = false;
                         printf("[DEBUG] Motores DESARMADOS por interruptor\n");
                     }
+                    attitude_reset_pids();
                     for (int i = 0; i < 4; ++i) dshot_set_throttle(i, 0);
                 } else {
                     for (int i = 0; i < 4; ++i) {

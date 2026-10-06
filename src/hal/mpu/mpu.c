@@ -53,21 +53,33 @@ static bool mpu_gyro_sensitivity_in_band(float lsb_per_dps, uint16_t full_scale_
 }
 
 static void mpu_accel_to_fixed(const int16_t raw[3], q16_16 *output) {
-    for (int i = 0; i < 3; ++i) {
-        const float corrected = (float)raw[i] - g_cal.accel_bias_lsb[i];
-        output[i] = float_to_q16(corrected / ACCEL_SENSITIVITY_LSB_PER_G);
-    }
+    // Aplicamos rotación de 90° a la derecha (Yaw +90°)
+    float corrected_x = (float)raw[1] - g_cal.accel_bias_lsb[1];
+    float corrected_y = -((float)raw[0] - g_cal.accel_bias_lsb[0]);
+    float corrected_z = (float)raw[2] - g_cal.accel_bias_lsb[2];
+
+    output[0] = float_to_q16(corrected_x / ACCEL_SENSITIVITY_LSB_PER_G);
+    output[1] = float_to_q16(corrected_y / ACCEL_SENSITIVITY_LSB_PER_G);
+    output[2] = float_to_q16(corrected_z / ACCEL_SENSITIVITY_LSB_PER_G);
 }
 
 static void mpu_gyro_to_fixed(const int16_t raw[3], q16_16 *output) {
     const float inv_sensitivity = (1.0f / g_gyro_sensitivity) * DEG_TO_RAD_F;
-    for (int i = 0; i < 3; ++i) {
-        g_last_gyro_raw[i] = raw[i];
-        const float corrected = (float)raw[i] - g_cal.gyro_bias_lsb[i];
-        output[i] = float_to_q16(corrected * inv_sensitivity);
-    }
-}
 
+    // Rotación de 90° a la derecha para el giroscopio
+    float corrected_x = (float)raw[1] - g_cal.gyro_bias_lsb[1];
+    float corrected_y = -((float)raw[0] - g_cal.gyro_bias_lsb[0]);
+    float corrected_z = (float)raw[2] - g_cal.gyro_bias_lsb[2];
+
+    // Guardamos opcionalmente los crudos transformados si se usan externamente
+    g_last_gyro_raw[0] = raw[1];
+    g_last_gyro_raw[1] = -raw[0];
+    g_last_gyro_raw[2] = raw[2];
+
+    output[0] = float_to_q16(corrected_x * inv_sensitivity);
+    output[1] = float_to_q16(corrected_y * inv_sensitivity);
+    output[2] = float_to_q16(corrected_z * inv_sensitivity);
+}
 static void mpu_decode_raw(const uint8_t raw[6], int16_t out[3]) {
     out[0] = (int16_t)(((uint16_t)raw[0] << 8) | raw[1]);
     out[1] = (int16_t)(((uint16_t)raw[2] << 8) | raw[3]);

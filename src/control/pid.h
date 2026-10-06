@@ -13,6 +13,7 @@ typedef struct {
 } pid_t;
 
 void pid_init(pid_t *pid, float kp, float ki, float kd, float max_output, float max_integral);
+void pid_reset(pid_t *pid);
 float pid_update(pid_t *pid, float setpoint, float measurement, float dt_s);
 
 #endif
