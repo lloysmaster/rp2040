@@ -13,11 +13,15 @@
 #define CRSF_RC_CHANNELS_TYPE 0x16
 #define CRSF_PAYLOAD_SIZE 22 // 22 bytes para 16 canales de 11 bits
 #define CRSF_FAILSAFE_TIMEOUT_US 200000u
+#define CRSF_PID_PAYLOAD_SIZE 14
 
 // Búfer circular alineado a 256 bytes (requerimiento del DMA de la RP2040 para wrap_ring)
 uint8_t __attribute__((aligned(256))) crsf_rx_buffer[256];
 static int dma_chan;
 static uint8_t read_idx = 0;
+
+static crsf_pid_cmd_t pending_pid;
+static volatile bool pid_pending = false;
 
 // Cola circular de transmisión de telemetría (vaciada por DMA hacia el UART)
 static uint8_t __attribute__((aligned(256))) crsf_tx_buffer[256];
@@ -33,12 +37,38 @@ typedef enum {
     CRSF_STATE_CRC
 } crsf_state_t;
 
+
 static crsf_state_t current_state = CRSF_STATE_SYNC;
 static uint8_t payload_buffer[64];
 static uint8_t payload_idx = 0;
 static uint8_t expected_len = 0;
 
 static crsf_data_t crsf_state;
+
+static float be32_to_float(const uint8_t *p) {
+    uint32_t u = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+                 ((uint32_t)p[2] << 8)  |  (uint32_t)p[3];
+    float f; memcpy(&f, &u, 4);
+    return f;
+}
+
+static void decode_pid_cmd(const uint8_t *pl) {
+    pending_pid.seq  = pl[0];
+    pending_pid.axis = pl[1];
+    pending_pid.kp = be32_to_float(&pl[2]);
+    pending_pid.ki = be32_to_float(&pl[6]);
+    pending_pid.kd = be32_to_float(&pl[10]);
+    pid_pending = true;
+}
+
+bool crsf_get_pid_cmd(crsf_pid_cmd_t *out) {
+    if (!pid_pending) return false;
+    *out = pending_pid;
+    pid_pending = false;
+    return true;
+}
+
+
 
 // Cálculo estándar de CRC8 para protocolo CRSF (Polinomio 0xD5)
 static uint8_t calc_crc8(uint8_t *data, uint8_t len) {
@@ -261,6 +291,11 @@ bool crsf_send_flight_mode(const char *mode) {
     return crsf_enqueue_frame(CRSF_FRAME_FLIGHT_MODE, payload, len);
 }
 
+bool crsf_send_pid_ack(uint8_t seq, uint8_t axis, uint8_t status) {
+    uint8_t payload[3] = { seq, axis, status };
+    return crsf_enqueue_frame(CRSF_FRAME_PID_ACK, payload, sizeof(payload));
+}
+
 bool crsf_update(void) {
     bool new_data_ready = false;
 
@@ -326,9 +361,12 @@ bool crsf_update(void) {
                     if (received_crc == calculated_crc) {
                         // Si el tipo de paquete es de canales RC, decodificamos
                         if (payload_buffer[0] == CRSF_RC_CHANNELS_TYPE && (expected_len - 2) == CRSF_PAYLOAD_SIZE) {
-                            decode_rc_channels(&payload_buffer[1]); // Pasar puntero saltando el byte Type
-                            new_data_ready = true;
+                                decode_rc_channels(&payload_buffer[1]);
+                                new_data_ready = true;
+                        } else if (payload_buffer[0] == CRSF_FRAME_PID_SET && (expected_len - 2) == CRSF_PID_PAYLOAD_SIZE) {
+                                decode_pid_cmd(&payload_buffer[1]);
                         }
+                        
                     }
                     current_state = CRSF_STATE_SYNC; // Reiniciar siempre al final de la trama
                 }

@@ -23,6 +23,13 @@ static float angle_roll = 0.0f;
 static float angle_pitch = 0.0f;
 static float angle_yaw = 0.0f;
 
+
+#define PID_KP_MAX 50.0f
+#define PID_KI_MAX 5.0f
+#define PID_KD_MAX 5.0f
+
+
+
 // Constante de tiempo del filtro complementario. Equivale al alpha 0.98 que se
 // usaba con el periodo fijo de 5 ms: tau = dt * alpha / (1 - alpha).
 #define ATTITUDE_COMPLEMENTARY_TAU_S 0.245f
@@ -42,6 +49,22 @@ void attitude_reset_pids(void) {
     for (int i = 0; i < 3; ++i) {
         filter_state.prev_filtered[i] = 0.0f;
     }
+}
+uint8_t attitude_set_pid(uint8_t axis, float kp, float ki, float kd) {
+    if (axis > 2) return PID_STATUS_BAD_AXIS;
+    if (!isfinite(kp) || !isfinite(ki) || !isfinite(kd) ||
+        kp < 0.0f || kp > PID_KP_MAX ||
+        ki < 0.0f || ki > PID_KI_MAX ||
+        kd < 0.0f || kd > PID_KD_MAX) {
+        return PID_STATUS_BAD_RANGE;
+    }
+    // Mismos límites que en attitude_init(); pid_init además resetea el integrador
+    switch (axis) {
+        case 0: pid_init(&roll_pid,  kp, ki, kd, 500.0f, 2000.0f); break;
+        case 1: pid_init(&pitch_pid, kp, ki, kd, 500.0f, 2000.0f); break;
+        case 2: pid_init(&yaw_pid,   kp, ki, kd, 300.0f, 1500.0f); break;
+    }
+    return PID_STATUS_OK;
 }
 static float rc_to_rate(uint16_t channel) {
     // 1. Clampear a límites físicos del receptor
@@ -101,8 +124,8 @@ static void apply_sensor_filter(const q16_16 gyro[3], float filtered[3], float d
 }
 
 void attitude_init(void) {
-    pid_init(&roll_pid, 0.50f, 0.01f, 0.002f, 500.0f, 2000.0f);
-    pid_init(&pitch_pid, 0.50f, 0.01f, 0.002f, 500.0f, 2000.0f);
+    pid_init(&roll_pid, 2.50f, 0.01f, 0.002f, 500.0f, 2000.0f);
+    pid_init(&pitch_pid, 2.50f, 0.01f, 0.002f, 500.0f, 2000.0f);
     pid_init(&yaw_pid, 0.18f, 0.005f, 0.001f, 300.0f, 1500.0f);
     for (int i = 0; i < 3; ++i) {
         filter_state.prev_filtered[i] = 0.0f;

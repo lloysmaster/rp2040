@@ -96,7 +96,13 @@ int main() {
         if (crsf_update()) {
             // CRSF entrega valores entre ~172 y ~1811 (centro en 992)
         }
-
+        crsf_pid_cmd_t pid_cmd;
+        if (crsf_get_pid_cmd(&pid_cmd)) {
+            uint8_t status = esc_armed
+                ? PID_STATUS_ARMED
+                : attitude_set_pid(pid_cmd.axis, pid_cmd.kp, pid_cmd.ki, pid_cmd.kd);
+                crsf_send_pid_ack(pid_cmd.seq, pid_cmd.axis, status);
+            }
         // 2. Procesar datos del MPU (Acelerómetro y Giroscopio)
         if (data_ready) {
             data_ready = false;

@@ -13,13 +13,16 @@
 #define CRSF_FRAME_LINK_STATISTICS  0x14
 #define CRSF_FRAME_ATTITUDE         0x1E
 #define CRSF_FRAME_FLIGHT_MODE      0x21
-
+#define CRSF_FRAME_PID_SET 0x60
+#define CRSF_FRAME_PID_ACK 0x61
 // Estructura para almacenar los datos del receptor
 typedef struct {
     uint16_t channels[CRSF_MAX_CHANNELS];
     bool is_connected;
     uint32_t last_packet_time; // Para failsafe
 } crsf_data_t;
+
+typedef struct { uint8_t seq, axis; float kp, ki, kd; } crsf_pid_cmd_t;
 
 // Inicializa el hardware (UART + DMA RX/TX) para CRSF
 void crsf_init(void);
@@ -49,8 +52,9 @@ bool crsf_send_gps(int32_t latitude_1e7,
                    uint8_t satellites);
 
 bool crsf_send_attitude(float pitch_rad, float roll_rad, float yaw_rad);
-
 bool crsf_send_flight_mode(const char *mode);
+bool crsf_get_pid_cmd(crsf_pid_cmd_t *out);
+bool crsf_send_pid_ack(uint8_t seq, uint8_t axis, uint8_t status);
 
 // Empuja la cola de transmisión hacia el UART. Llamar en cada iteración del lazo.
 void crsf_tx_pump(void);

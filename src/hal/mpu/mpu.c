@@ -67,14 +67,14 @@ static void mpu_gyro_to_fixed(const int16_t raw[3], q16_16 *output) {
     const float inv_sensitivity = (1.0f / g_gyro_sensitivity) * DEG_TO_RAD_F;
 
     // Rotación de 90° a la derecha para el giroscopio
-    float corrected_x = (float)raw[1] - g_cal.gyro_bias_lsb[1];
+    float corrected_x = -((float)raw[1] - g_cal.gyro_bias_lsb[1]);
     float corrected_y = -((float)raw[0] - g_cal.gyro_bias_lsb[0]);
-    float corrected_z = (float)raw[2] - g_cal.gyro_bias_lsb[2];
+    float corrected_z = -((float)raw[2] - g_cal.gyro_bias_lsb[2]);
 
     // Guardamos opcionalmente los crudos transformados si se usan externamente
-    g_last_gyro_raw[0] = raw[1];
+    g_last_gyro_raw[0] = -raw[1];
     g_last_gyro_raw[1] = -raw[0];
-    g_last_gyro_raw[2] = raw[2];
+    g_last_gyro_raw[2] = -raw[2];
 
     output[0] = float_to_q16(corrected_x * inv_sensitivity);
     output[1] = float_to_q16(corrected_y * inv_sensitivity);

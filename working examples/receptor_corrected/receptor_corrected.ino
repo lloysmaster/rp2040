@@ -12,11 +12,12 @@ HardwareSerial gpsSerial(1); // Usamos UART1 para el GPS (Pines RX: 4, TX: 5 por
 
 // ===== Paquete de configuración PID recibido por ESP-NOW =====
 typedef struct __attribute__((packed)) {
-  uint8_t type;         // 0x03 = configuración PID
-  float kp;
-  float ki;
-  float kd;
+  uint8_t type;   // 0x03
+  uint8_t seq;
+  uint8_t axis;   // 0 roll, 1 pitch, 2 yaw
+  float kp, ki, kd;
 } pid_packet_t;
+
 
 // ===== Paquete de canales RC recibido por ESP-NOW (desde el emisor) =====
 typedef struct __attribute__((packed)) {
@@ -46,14 +47,21 @@ typedef struct __attribute__((packed)) {
   int8_t  linkSNR;
   uint8_t linkTXPower;
   char flightMode[16];
+  uint8_t pidAckSeq;     // 0 = ninguno
+  uint8_t pidAckAxis;
+  uint8_t pidAckStatus;  // 0 ok, 1 armado, 2 fuera de rango, 3 eje invalido
 } telemetry_packet_t;
 
 uint16_t channels[16] = {992, 992, 992, 992, 992, 992, 992, 992,
                          992, 992, 992, 992, 992, 992, 992, 992};
 
 telemetry_packet_t telemetry = {0x02};
+pid_packet_t  pidToForward;
 
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+
+
 
 // ===== Calidad del enlace ESP-NOW, medida en el receptor =====
 #define RC_PACKET_PERIOD_MS   20   
@@ -61,6 +69,7 @@ uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 #define LINK_EXPECTED_PACKETS (LINK_WINDOW_MS / RC_PACKET_PERIOD_MS)
 #define LINK_TIMEOUT_MS       500  
 
+volatile bool pidForwardPending = false;
 volatile int8_t   uplinkRSSI = 0;         
 volatile int8_t   uplinkNoiseFloor = -96;  
 volatile uint16_t uplinkPacketsInWindow = 0;
@@ -94,16 +103,9 @@ void OnDataRecv(const esp_now_recv_info_t * info, const uint8_t *incoming_data, 
 
   // 2. Paquete de Configuración PID (0x03)
   else if (incoming_data[0] == 0x03 && len == sizeof(pid_packet_t)) {
-    pid_packet_t pidPkt;
-    memcpy(&pidPkt, incoming_data, sizeof(pidPkt));
-
-    Serial.print("PID Recibido -> Kp: ");
-    Serial.print(pidPkt.kp);
-    Serial.print(" | Ki: ");
-    Serial.print(pidPkt.ki);
-    Serial.print(" | Kd: ");
-    Serial.println(pidPkt.kd);
-  }
+  memcpy(&pidToForward, incoming_data, sizeof(pid_packet_t));
+  pidForwardPending = true;   // se manda desde loop(), NO desde el callback
+}
 }
 
 // ---------- ESP-NOW: resultado del envio de telemetria ----------
@@ -281,7 +283,13 @@ void parseCRSFFrame(uint8_t *frame, uint8_t frameLen) {
         telemetry.flightMode[n] = '\0';
       }
       break;
-
+    case 0x61: // PID_ACK
+  if (payloadLen >= 3) {
+    telemetry.pidAckSeq    = payload[0];
+    telemetry.pidAckAxis   = payload[1];
+    telemetry.pidAckStatus = payload[2];
+  }
+  break;
     default:
       break; 
   }
@@ -350,6 +358,28 @@ void enviarTelemetriaESPNOW() {
     lastTelemetrySend = millis();
   }
 }
+static void putF32BE(uint8_t *dst, float v) {
+  uint32_t u; memcpy(&u, &v, 4);
+  dst[0] = u >> 24; dst[1] = u >> 16; dst[2] = u >> 8; dst[3] = u;
+}
+
+void enviarPidCRSF() {
+  if (!pidForwardPending) return;
+  pid_packet_t p = pidToForward;
+  pidForwardPending = false;
+
+  uint8_t frame[18];
+  frame[0] = 0xC8;
+  frame[1] = 16;          // tipo + 14 de payload + crc
+  frame[2] = 0x60;        // PID_SET
+  frame[3] = p.seq;
+  frame[4] = p.axis;
+  putF32BE(&frame[5],  p.kp);
+  putF32BE(&frame[9],  p.ki);
+  putF32BE(&frame[13], p.kd);
+  frame[17] = crsf_crc8(&frame[2], 15);
+  Serial2.write(frame, 18);
+}
 
 void setup() {
   Serial.begin(115200);
@@ -357,7 +387,7 @@ void setup() {
   
   // Inicializamos el puerto Serial1 para el GY-NEO6MV2
   // Puedes cambiar los pines 4 (RX) y 5 (TX) según tu cableado físico
-  gpsSerial.begin(GPS_BAUDRATE, SERIAL_8N1, 4, 5); 
+  gpsSerial.begin(GPS_BAUDRATE, SERIAL_8N1, 5, 4); 
 
   Serial.print("MAC del Receptor: ");
   Serial.println(WiFi.macAddress());
@@ -397,7 +427,7 @@ void loop() {
   leerGPSDirecto();           // 2. Leer y parsear datos del GY-NEO6MV2 localmente
   actualizarCalidadEnlace();  // 3. Medir RSSI/LQ/SNR del enlace ESP-NOW
   enviarTelemetriaESPNOW();   // 4. Reenviar la telemetria completa al emisor
-
+  enviarPidCRSF();
   if (millis() - lastSendTime >= 10) { // 5. Enviar canales RC al FC a 100Hz
     enviarTramaCRSF();
     lastSendTime = millis();

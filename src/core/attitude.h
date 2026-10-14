@@ -25,6 +25,12 @@ typedef struct {
     bool enabled;
 } attitude_cmd_t;
 
+#define PID_STATUS_OK         0
+#define PID_STATUS_ARMED      1
+#define PID_STATUS_BAD_RANGE  2
+#define PID_STATUS_BAD_AXIS   3
+uint8_t attitude_set_pid(uint8_t axis, float kp, float ki, float kd);
+
 void attitude_init(void);
 void attitude_set_mode(flight_mode_t mode);
 flight_mode_t attitude_get_mode(void);
