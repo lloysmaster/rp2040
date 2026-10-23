@@ -54,9 +54,9 @@ static bool mpu_gyro_sensitivity_in_band(float lsb_per_dps, uint16_t full_scale_
 
 static void mpu_accel_to_fixed(const int16_t raw[3], q16_16 *output) {
     // Aplicamos rotación de 90° a la derecha (Yaw +90°)
-    float corrected_x = (float)raw[1] - g_cal.accel_bias_lsb[1];
+    float corrected_x = -((float)raw[1] - g_cal.accel_bias_lsb[1]);
     float corrected_y = -((float)raw[0] - g_cal.accel_bias_lsb[0]);
-    float corrected_z = (float)raw[2] - g_cal.accel_bias_lsb[2];
+    float corrected_z = -((float)raw[2] - g_cal.accel_bias_lsb[2]);
 
     output[0] = float_to_q16(corrected_x / ACCEL_SENSITIVITY_LSB_PER_G);
     output[1] = float_to_q16(corrected_y / ACCEL_SENSITIVITY_LSB_PER_G);

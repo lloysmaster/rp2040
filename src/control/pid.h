@@ -1,6 +1,8 @@
 #ifndef PID_H
 #define PID_H
 
+#include <stdbool.h>
+
 typedef struct {
     float kp;
     float ki;
@@ -10,9 +12,17 @@ typedef struct {
     float max_output;
     float max_integral;
     float max_i_term; // Limite directo sobre la contribución I
+
+    // Feedforward
+    float kff;
+    float max_ff_term;
+    float prev_setpoint;
+    float ff_filtered;
+    bool  ff_primed;
 } pid_t;
 
 void pid_init(pid_t *pid, float kp, float ki, float kd, float max_output, float max_integral);
+void pid_set_ff(pid_t *pid, float kff, float max_ff_term);
 void pid_reset(pid_t *pid);
 float pid_update(pid_t *pid, float setpoint, float measurement, float dt_s);
 

@@ -12,10 +12,11 @@
 #define CRSF_CHANNEL_MID 992
 #define CRSF_CHANNEL_MAX 1811
 
-// Define la tasa máxima de rotación deseada cuando el stick esté al 100%
-#define MAX_RATE_DPS     500.0f                 // Ejemplo: 500 °/s en fondo de escala
-#define DEG_TO_RAD_F     0.01745329252f         // Identico al usado en mpu.c
-#define MAX_RATE_RAD_S   (MAX_RATE_DPS * DEG_TO_RAD_F) // ~8.72 rad/s
+/// Tasa base (RC_RATE = 1.0). El máximo real es BASE / (1 - RC_SUPER_RATE).
+// Con RC_SUPER_RATE 0.70 -> 200 / 0.3 ≈ 667 °/s.
+#define RC_BASE_RATE_DPS    200.0f
+#define DEG_TO_RAD_F        0.01745329252f
+#define RC_BASE_RATE_RAD_S  (RC_BASE_RATE_DPS * DEG_TO_RAD_F)   // ~3.49 rad/s
 
 typedef struct {
     int32_t roll_output;
@@ -29,7 +30,7 @@ typedef struct {
 #define PID_STATUS_ARMED      1
 #define PID_STATUS_BAD_RANGE  2
 #define PID_STATUS_BAD_AXIS   3
-uint8_t attitude_set_pid(uint8_t axis, float kp, float ki, float kd);
+uint8_t attitude_set_pid(uint8_t axis, float kp, float ki, float kd, float kff);
 
 void attitude_init(void);
 void attitude_set_mode(flight_mode_t mode);

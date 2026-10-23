@@ -22,7 +22,7 @@ typedef struct {
     uint32_t last_packet_time; // Para failsafe
 } crsf_data_t;
 
-typedef struct { uint8_t seq, axis; float kp, ki, kd; } crsf_pid_cmd_t;
+typedef struct { uint8_t seq, axis; float kp, ki, kd, kff; } crsf_pid_cmd_t;
 
 // Inicializa el hardware (UART + DMA RX/TX) para CRSF
 void crsf_init(void);

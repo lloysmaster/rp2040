@@ -13,7 +13,7 @@
 #define CRSF_RC_CHANNELS_TYPE 0x16
 #define CRSF_PAYLOAD_SIZE 22 // 22 bytes para 16 canales de 11 bits
 #define CRSF_FAILSAFE_TIMEOUT_US 200000u
-#define CRSF_PID_PAYLOAD_SIZE 14
+#define CRSF_PID_PAYLOAD_SIZE 18
 
 // Búfer circular alineado a 256 bytes (requerimiento del DMA de la RP2040 para wrap_ring)
 uint8_t __attribute__((aligned(256))) crsf_rx_buffer[256];
@@ -58,6 +58,7 @@ static void decode_pid_cmd(const uint8_t *pl) {
     pending_pid.kp = be32_to_float(&pl[2]);
     pending_pid.ki = be32_to_float(&pl[6]);
     pending_pid.kd = be32_to_float(&pl[10]);
+    pending_pid.kff = be32_to_float(&pl[14]);
     pid_pending = true;
 }
 

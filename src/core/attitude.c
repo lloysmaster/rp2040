@@ -5,7 +5,9 @@
 #include "control/mixer.h"
 #include "hal/esc/dshot.h"
 #include "config/rcMap.h"
-
+#include "config/gyro.h"
+_Static_assert(RC_BASE_RATE_DPS * RC_RATE / (1.0f - RC_SUPER_RATE) < 0.85f * GYRO_FULL_SCALE_DPS,
+               "Rate maximo demasiado cerca del fondo de escala del giro");
 
 typedef struct {
     float prev_filtered[3];
@@ -18,6 +20,15 @@ static bool attitude_ready = false;
 static flight_mode_t current_mode = FLIGHT_MODE_STABILIZED;
 static filter_state_t filter_state;
 
+#define ATT_FF_ROLL   0.25f
+#define ATT_FF_PITCH  0.25f
+#define ATT_FF_YAW    0.25f
+
+static pid_t * const axis_pid[3] = { &roll_pid, &pitch_pid, &yaw_pid };
+static float ff_gain[3] = { ATT_FF_ROLL, ATT_FF_PITCH, ATT_FF_YAW };
+// Tope de la contribución FF (~40 % del max_output de cada eje)
+static const float ff_max[3]  = { 200.0f, 200.0f, 120.0f };
+
 // Ángulos estimados en radianes (referencia para la telemetría)
 static float angle_roll = 0.0f;
 static float angle_pitch = 0.0f;
@@ -27,7 +38,7 @@ static float angle_yaw = 0.0f;
 #define PID_KP_MAX 50.0f
 #define PID_KI_MAX 5.0f
 #define PID_KD_MAX 5.0f
-
+#define PID_KFF_MAX 5.0f
 
 
 // Constante de tiempo del filtro complementario. Equivale al alpha 0.98 que se
@@ -50,20 +61,24 @@ void attitude_reset_pids(void) {
         filter_state.prev_filtered[i] = 0.0f;
     }
 }
-uint8_t attitude_set_pid(uint8_t axis, float kp, float ki, float kd) {
+uint8_t attitude_set_pid(uint8_t axis, float kp, float ki, float kd, float kff) {
     if (axis > 2) return PID_STATUS_BAD_AXIS;
-    if (!isfinite(kp) || !isfinite(ki) || !isfinite(kd) ||
+    if (!isfinite(kp) || !isfinite(ki) || !isfinite(kd) || !isfinite(kff) ||
         kp < 0.0f || kp > PID_KP_MAX ||
         ki < 0.0f || ki > PID_KI_MAX ||
-        kd < 0.0f || kd > PID_KD_MAX) {
+        kd < 0.0f || kd > PID_KD_MAX ||
+        kff < 0.0f || kff > PID_KFF_MAX) {
         return PID_STATUS_BAD_RANGE;
     }
+    ff_gain[axis] = kff;
     // Mismos límites que en attitude_init(); pid_init además resetea el integrador
     switch (axis) {
         case 0: pid_init(&roll_pid,  kp, ki, kd, 500.0f, 2000.0f); break;
         case 1: pid_init(&pitch_pid, kp, ki, kd, 500.0f, 2000.0f); break;
         case 2: pid_init(&yaw_pid,   kp, ki, kd, 300.0f, 1500.0f); break;
     }
+        // pid_init puso kff en 0: se vuelve a aplicar el feedforward de ese eje
+    pid_set_ff(axis_pid[axis], ff_gain[axis], ff_max[axis]);
     return PID_STATUS_OK;
 }
 static float rc_to_rate(uint16_t channel) {
@@ -71,22 +86,39 @@ static float rc_to_rate(uint16_t channel) {
     if (channel < CRSF_CHANNEL_MIN) channel = CRSF_CHANNEL_MIN;
     if (channel > CRSF_CHANNEL_MAX) channel = CRSF_CHANNEL_MAX;
 
-    // 2. Normalizar de -1.0f a +1.0f sin deadband
-    float norm = 0.0f;
+    // 2. Normalizar de -1.0f a +1.0f centrado en CRSF_CHANNEL_MID
+    float rcCommand = 0.0f;
     if (channel >= CRSF_CHANNEL_MID) {
-        norm = (float)(channel - CRSF_CHANNEL_MID) / (float)(CRSF_CHANNEL_MAX - CRSF_CHANNEL_MID);
+        rcCommand = (float)(channel - CRSF_CHANNEL_MID) / (float)(CRSF_CHANNEL_MAX - CRSF_CHANNEL_MID);
     } else {
-        norm = (float)(channel - CRSF_CHANNEL_MID) / (float)(CRSF_CHANNEL_MID - CRSF_CHANNEL_MIN);
+        rcCommand = (float)(channel - CRSF_CHANNEL_MID) / (float)(CRSF_CHANNEL_MID - CRSF_CHANNEL_MIN);
     }
 
     // Guardrail por si hay jitter fuera de rango
-    if (norm > 1.0f) norm = 1.0f;
-    if (norm < -1.0f) norm = -1.0f;
+    if (rcCommand > 1.0f) rcCommand = 1.0f;
+    if (rcCommand < -1.0f) rcCommand = -1.0f;
 
-    // 3. Mapeo directo a rad/s
-    return norm * MAX_RATE_RAD_S;
+    // Guardamos el signo para aplicarlo al final
+    float sign = (rcCommand < 0.0f) ? -1.0f : 1.0f;
+    float absRc = fabsf(rcCommand);
+
+    // 3. Cálculo de Expo estilo Betaflight
+    // Fórmula: rcCommand * (rcCommand^2 * expo + 1 - expo)
+    float rcFactor = 1.0f - RC_EXPO + (RC_EXPO * absRc * absRc);
+    float expoCommand = absRc * rcFactor;
+
+    // 4. Cálculo de Super Rate (Agilidad extra en extremos)
+    // Fórmula Betaflight rates: anglular_velocity = rcRate * expoCommand / (1 - (absRc * superRate))
+    float superFactor = 1.0f - (absRc * RC_SUPER_RATE);
+    if (superFactor < 0.01f) {
+        superFactor = 0.01f; // Evitar división por cero
+    }
+    
+    float finalRate = (RC_RATE * expoCommand) / superFactor;
+
+    // 5. Mapeo final a rad/s usando tu MAX_RATE_RAD_S como referencia máxima
+    return sign * finalRate * RC_BASE_RATE_RAD_S;
 }
-
 // Un alpha fijo ata el corte del filtro al periodo del bucle: al cambiar la
 // frecuencia habria que retocarlo a mano. Se deriva de dt para que el corte en
 // Hz sea el mismo a cualquier cadencia.
@@ -124,9 +156,12 @@ static void apply_sensor_filter(const q16_16 gyro[3], float filtered[3], float d
 }
 
 void attitude_init(void) {
-    pid_init(&roll_pid, 2.50f, 0.01f, 0.002f, 500.0f, 2000.0f);
-    pid_init(&pitch_pid, 2.50f, 0.01f, 0.002f, 500.0f, 2000.0f);
-    pid_init(&yaw_pid, 0.18f, 0.005f, 0.001f, 300.0f, 1500.0f);
+    pid_init(&roll_pid, 38.0f, 0.11f, 0.008f, 500.0f, 2000.0f);
+    pid_init(&pitch_pid, 38.0f, 0.11f, 0.008f, 500.0f, 2000.0f);
+    pid_init(&yaw_pid, 38.0f, 0.1f, 0.0f, 300.0f, 1500.0f);
+    for (int i = 0; i < 3; ++i) {
+        pid_set_ff(axis_pid[i], ff_gain[i], ff_max[i]);
+    }
     for (int i = 0; i < 3; ++i) {
         filter_state.prev_filtered[i] = 0.0f;
     }

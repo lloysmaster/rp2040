@@ -15,7 +15,7 @@ typedef struct __attribute__((packed)) {
   uint8_t type;   // 0x03
   uint8_t seq;
   uint8_t axis;   // 0 roll, 1 pitch, 2 yaw
-  float kp, ki, kd;
+  float kp, ki, kd, kff;
 } pid_packet_t;
 
 
@@ -213,17 +213,39 @@ uint8_t crsf_crc8(const uint8_t *ptr, uint8_t len) {
 }
 
 // ---------- Empaquetado y envio de canales CRSF hacia el FC ----------
+// ---------- Empaquetado y envio de canales CRSF hacia el FC ----------
 void enviarTramaCRSF() {
   uint8_t frame[26];
   frame[0] = 0xC8; // Sync
   frame[1] = 24;   // Largo
   frame[2] = 0x16; // Tipo: RC_CHANNELS_PACKED
 
+  // Copia local de los canales a enviar
+  uint16_t local_channels[16];
+
+  if (!linkUp) {
+    // === FAILSAVE: Si no hay enlace ESP-NOW, forzar valores seguros ===
+    for (int i = 0; i < 16; i++) {
+      local_channels[i] = 992; // Centro por defecto para sticks
+    }
+    // Canal de Throttle (por lo general canal 2 en CRSF/AETR o según tu rcMap: index 2)
+    local_channels[2] = 172;   // Throttle al mínimo absoluto (172 en protocolo CRSF)
+    
+    // Canal de Armado (asumiendo que usas un canal específico, ej: canal 4 / index 4)
+    // Ponlo por debajo del umbral de armado (ej: 992 o 172) para forzar el desarme en el FC
+    local_channels[4] = 992;   
+  } else {
+    // Si hay enlace, usamos los canales reales recibidos por ESP-NOW
+    for (int i = 0; i < 16; i++) {
+      local_channels[i] = channels[i];
+    }
+  }
+
   uint32_t bits = 0;
   uint8_t bits_available = 0;
   uint8_t byte_idx = 3;
   for (int i = 0; i < 16; i++) {
-    bits |= (uint32_t)(channels[i] & 0x07FF) << bits_available;
+    bits |= (uint32_t)(local_channels[i] & 0x07FF) << bits_available;
     bits_available += 11;
     while (bits_available >= 8) {
       frame[byte_idx++] = bits & 0xFF;
@@ -368,17 +390,18 @@ void enviarPidCRSF() {
   pid_packet_t p = pidToForward;
   pidForwardPending = false;
 
-  uint8_t frame[18];
+  uint8_t frame[22];
   frame[0] = 0xC8;
-  frame[1] = 16;          // tipo + 14 de payload + crc
+  frame[1] = 20;          // tipo + 18 de payload + crc
   frame[2] = 0x60;        // PID_SET
   frame[3] = p.seq;
   frame[4] = p.axis;
   putF32BE(&frame[5],  p.kp);
   putF32BE(&frame[9],  p.ki);
   putF32BE(&frame[13], p.kd);
-  frame[17] = crsf_crc8(&frame[2], 15);
-  Serial2.write(frame, 18);
+  putF32BE(&frame[17], p.kff);
+  frame[21] = crsf_crc8(&frame[2], 19);   // tipo + 18 de payload
+  Serial2.write(frame, 22);
 }
 
 void setup() {
@@ -387,7 +410,7 @@ void setup() {
   
   // Inicializamos el puerto Serial1 para el GY-NEO6MV2
   // Puedes cambiar los pines 4 (RX) y 5 (TX) según tu cableado físico
-  gpsSerial.begin(GPS_BAUDRATE, SERIAL_8N1, 5, 4); 
+  gpsSerial.begin(GPS_BAUDRATE, SERIAL_8N1, 4, 5); 
 
   Serial.print("MAC del Receptor: ");
   Serial.println(WiFi.macAddress());

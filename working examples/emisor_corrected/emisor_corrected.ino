@@ -57,7 +57,7 @@ typedef struct __attribute__((packed)) {
   uint8_t type;   // 0x03
   uint8_t seq;
   uint8_t axis;   // 0 roll, 1 pitch, 2 yaw
-  float kp, ki, kd;
+    float kp, ki, kd, kff;
 } pid_packet_t;
 
 typedef struct __attribute__((packed)) {
@@ -90,14 +90,16 @@ telemetry_packet_t telemetry = {0x02};
 volatile bool telemetryValid = false;
 unsigned long lastTelemetryRxMillis = 0;
 
-struct PidJob { uint8_t axis; float kp, ki, kd; };
+struct PidJob { uint8_t axis; float kp, ki, kd, kff; };
 PidJob  pidQueue[4];
 uint8_t pidQHead = 0, pidQCount = 0;
 uint8_t pidSeq = 0;
 bool    pidInFlight = false;
 uint8_t pidTries = 0;
 uint32_t pidLastTx = 0;
-float   pidCache[3][3] = {{2.5f,0.01f,0.002f},{2.5f,0.01f,0.002f},{0.18f,0.005f,0.001f}};
+float   pidCache[3][4] = {{38.0f,0.11f,0.004f,0.05f},
+                          {38.0f,0.11f,0.004f,0.05f},
+                          {38.0f,0.10f,0.000f,0.05f}};
 
 #define PID_MAX_TRIES 10
 #define PID_RETRY_MS  100
@@ -143,100 +145,70 @@ uint16_t read_arm_switch_channel() {
   }
 }
 
-void handleBluetoothCommands() {
-  if (SerialBT.available()) {
-    String command = SerialBT.readStringUntil('\n');
-    command.trim();
+void processCommand(Stream &s, String command) {
+  command.trim();
 
-    if (command == "get_home") {
-      SerialBT.print("home:");
-      SerialBT.print(currentLatitude);
-      SerialBT.print(",");
-      SerialBT.println(currentLongitude);
-    }
-    else if (command == "get_position") {
-      SerialBT.print("pos:");
-      SerialBT.print(currentLatitude);
-      SerialBT.print(",");
-      SerialBT.println(currentLongitude);
-    }
+  if (command == "get_home" || command == "get_position") {
+    s.print("pos:");
+    s.print(currentLatitude);
+    s.print(",");
+    s.println(currentLongitude);
+  }
     else if (command.startsWith("set_pid:")) {
-      int c1 = command.indexOf(',', 8);
-      int c2 = (c1 != -1) ? command.indexOf(',', c1 + 1) : -1;
-      int c3 = (c2 != -1) ? command.indexOf(',', c2 + 1) : -1;
-      if (c3 == -1) {
-        SerialBT.println("pid_err:formato");
+    int c1 = command.indexOf(',', 8);
+    int c2 = (c1 != -1) ? command.indexOf(',', c1 + 1) : -1;
+    int c3 = (c2 != -1) ? command.indexOf(',', c2 + 1) : -1;
+    if (c3 == -1) {
+      s.println("pid_err:formato");
+    } else {
+      int c4 = command.indexOf(',', c3 + 1);   // -1 si no viene kff
+      int axis = command.substring(8, c1).toInt();
+      if (axis < 0 || axis > 2) {
+        s.println("pid_err:eje");
+      } else if (pidQCount >= 4) {
+        s.println("pid_err:ocupado");
       } else {
-        int axis = command.substring(8, c1).toInt();
-        if (axis < 0 || axis > 2) {
-          SerialBT.println("pid_err:eje");
-        } else if (pidQCount >= 4) {
-          SerialBT.println("pid_err:ocupado");
+        PidJob &j = pidQueue[(pidQHead + pidQCount) % 4];
+        j.axis = axis;
+        j.kp = command.substring(c1 + 1, c2).toFloat();
+        j.ki = command.substring(c2 + 1, c3).toFloat();
+        if (c4 != -1) {
+          j.kd  = command.substring(c3 + 1, c4).toFloat();
+          j.kff = command.substring(c4 + 1).toFloat();
         } else {
-          PidJob &j = pidQueue[(pidQHead + pidQCount) % 4];
-          j.axis = axis;
-          j.kp = command.substring(c1 + 1, c2).toFloat();
-          j.ki = command.substring(c2 + 1, c3).toFloat();
-          j.kd = command.substring(c3 + 1).toFloat();
-          pidQCount++;
-          SerialBT.print("pid_queued:"); SerialBT.println(axis);
+          j.kd  = command.substring(c3 + 1).toFloat();
+          j.kff = pidCache[axis][3];            // sin kff: se conserva el actual
         }
+        pidQCount++;
+        s.print("pid_queued:"); s.println(axis);
       }
     }
-    else if (command.startsWith("get_pid:")) {
-      int a = command.substring(8).toInt();
-      if (a >= 0 && a <= 2) {
-        SerialBT.print("pid:"); SerialBT.print(a); SerialBT.print(",");
-        SerialBT.print(pidCache[a][0], 4); SerialBT.print(",");
-        SerialBT.print(pidCache[a][1], 4); SerialBT.print(",");
-        SerialBT.println(pidCache[a][2], 4);
-      }
+  }
+  else if (command.startsWith("get_pid:")) {
+    int a = command.substring(8).toInt();
+    if (a >= 0 && a <= 2) {
+      s.print("pid:"); s.print(a); s.print(",");
+      s.print(pidCache[a][0], 4); s.print(",");
+      s.print(pidCache[a][1], 4); s.print(",");
+      s.print(pidCache[a][2], 4); s.print(",");
+      s.println(pidCache[a][3], 4);
+      
     }
-    else if (command.startsWith("set_home:")) {
-      int commaIndex = command.indexOf(',', 9);
-      if (commaIndex != -1) {
-        currentLatitude = command.substring(9, commaIndex);
-        currentLongitude = command.substring(commaIndex + 1);
-      }
-      SerialBT.print("home:");
-      SerialBT.print(currentLatitude);
-      SerialBT.print(",");
-      SerialBT.println(currentLongitude);
-    }
-    else if (command == "get_telemetry") {
-      if (!telemetryValid) {
-        SerialBT.println("telemetry:sin_datos");
-      } else {
-        SerialBT.print("telemetry:");
-        SerialBT.print(telemetry.batteryVoltage);  SerialBT.print(",");
-        SerialBT.print(telemetry.batteryCurrent);  SerialBT.print(",");
-        SerialBT.print(telemetry.batteryRemaining); SerialBT.print(",");
-        SerialBT.print(telemetry.gpsLat, 7);  SerialBT.print(",");
-        SerialBT.print(telemetry.gpsLon, 7);  SerialBT.print(",");
-        SerialBT.print(telemetry.gpsSatellites); SerialBT.print(",");
-        SerialBT.print(telemetry.linkQuality); SerialBT.print(",");
-        SerialBT.print(telemetry.linkRSSI1); SerialBT.print(",");
-        SerialBT.println(telemetry.flightMode);
-      }
-    }
-    else if (command == "get_battery") {
-      SerialBT.print("battery:");
-      SerialBT.print(telemetry.batteryVoltage); SerialBT.print("V,");
-      SerialBT.print(telemetry.batteryCurrent); SerialBT.print("A,");
-      SerialBT.print(telemetry.batteryRemaining); SerialBT.println("%");
-    }
-    else if (command == "get_gps") {
-      SerialBT.print("gps:");
-      SerialBT.print(telemetry.gpsLat, 7); SerialBT.print(",");
-      SerialBT.print(telemetry.gpsLon, 7); SerialBT.print(",sats:");
-      SerialBT.println(telemetry.gpsSatellites);
-    }
-    else if (command == "get_link") {
-      SerialBT.print("link:LQ=");
-      SerialBT.print(telemetry.linkQuality); SerialBT.print("%,RSSI1=");
-      SerialBT.print(telemetry.linkRSSI1); SerialBT.print(",RSSI2=");
-      SerialBT.print(telemetry.linkRSSI2); SerialBT.print(",SNR=");
-      SerialBT.println(telemetry.linkSNR);
+  }
+  else if (command == "get_telemetry") {
+    if (!telemetryValid) {
+      s.println("telemetry:sin_datos");
+    } else {
+      s.print("telemetry:");
+      s.print(telemetry.batteryVoltage);  s.print(",");
+      s.print(telemetry.batteryCurrent);  s.print(",");
+      s.print(telemetry.batteryRemaining); s.print(",");
+      s.print(telemetry.gpsLat, 7);  s.print(",");
+      s.print(telemetry.gpsLon, 7);  s.print(",");
+      s.print(telemetry.gpsSatellites); s.print(",");
+      s.print(telemetry.linkQuality); s.print(",");
+      s.print(telemetry.linkRSSI1); s.print(",");
+      s.println(telemetry.flightMode);
     }
   }
 }
@@ -255,10 +227,13 @@ void servicePid() {
   if (telemetry.pidAckSeq == pidSeq) {
     uint8_t st = telemetry.pidAckStatus;
     if (st == 0) {
-      pidCache[j.axis][0] = j.kp; pidCache[j.axis][1] = j.ki; pidCache[j.axis][2] = j.kd;
+      pidCache[j.axis][0] = j.kp; pidCache[j.axis][1] = j.ki;
+      pidCache[j.axis][2] = j.kd; pidCache[j.axis][3] = j.kff;
       SerialBT.print("pid_ok:"); SerialBT.print(j.axis); SerialBT.print(",");
       SerialBT.print(j.kp, 4); SerialBT.print(","); SerialBT.print(j.ki, 4);
-      SerialBT.print(","); SerialBT.println(j.kd, 4);
+      SerialBT.print(","); SerialBT.print(j.kd, 4);
+      SerialBT.print(","); SerialBT.println(j.kff, 4);
+      
     } else {
       SerialBT.print("pid_err:"); SerialBT.print(j.axis);
       SerialBT.println(st == 1 ? ",armado" : st == 2 ? ",rango" : ",eje");
@@ -274,13 +249,25 @@ void servicePid() {
   }
 
   if (pidTries == 0 || millis() - pidLastTx >= PID_RETRY_MS) {
-    pid_packet_t p = {0x03, pidSeq, j.axis, j.kp, j.ki, j.kd};
+    pid_packet_t p = {0x03, pidSeq, j.axis, j.kp, j.ki, j.kd, j.kff};
     esp_now_send(broadcastAddress, (uint8_t*)&p, sizeof(p));
     pidTries++;
     pidLastTx = millis();
   }
 }
+void handleCommands() {
+  // 1. Revisar comandos por Bluetooth
+  if (SerialBT.available()) {
+    String cmd = SerialBT.readStringUntil('\n');
+    processCommand(SerialBT, cmd);
+  }
 
+  // 2. Revisar comandos idénticos por USB (Serial)
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    processCommand(Serial, cmd);
+  }
+}
 void setup() {
   Serial.begin(115200);
   
@@ -335,7 +322,7 @@ void setup() {
 unsigned long lastSendTime = 0;
 
 void loop() {
-  handleBluetoothCommands();
+  handleCommands();
   servicePid();
 
   if (millis() - lastSendTime >= 20) {

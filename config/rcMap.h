@@ -2,23 +2,23 @@
 #define CONFIG_RCMAP_H
 
 // --- MAPEO DE LOS CANALES DEL CONTROL ---
-// Indice dentro de crsf_data_t.channels que ocupa cada eje. El emisor manda
-// AETR: alerones (roll), elevador (pitch), acelerador y timon (yaw). Si en el
-// control las palancas estan cruzadas (mover pitch mueve roll), se intercambian
-// aqui los indices de RC_CHANNEL_ROLL y RC_CHANNEL_PITCH.
 #define RC_CHANNEL_ROLL     0
 #define RC_CHANNEL_PITCH    1
 #define RC_CHANNEL_THROTTLE 2
 #define RC_CHANNEL_YAW      3
 #define RC_CHANNEL_ARM      4
 
-// Sentido de cada eje: +1 deja el canal tal como llega y -1 lo invierte
-// respecto del centro. Depende de como esten cableados los potenciometros de
-// las palancas, asi que se ajusta con el dron sujeto: si al pedir alabeo a la
-// derecha el dron se va a la izquierda (o al empujar el morro abajo sube), se
-// cambia el signo del eje correspondiente.
+// Sentido de cada eje
 #define RC_SIGN_ROLL  (-1)
 #define RC_SIGN_PITCH (+1)
 #define RC_SIGN_YAW   (+1)
+
+// --- CONFIGURACIÓN DE RATES ESTILO BETAFLIGHT ---
+// RC Rate: Multiplicador base (ej. 1.0 = 100%)
+#define RC_RATE         1.00f
+// Expo: Sensibilidad cerca del centro (0.0 = lineal, hasta 1.0)
+#define RC_EXPO         0.20f
+// Super Rate: Define cuánta agilidad extra tienes en los extremos de las palancas
+#define RC_SUPER_RATE   0.70f
 
 #endif // CONFIG_RCMAP_H

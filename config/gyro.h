@@ -9,7 +9,7 @@
 
 // Fondo de escala del giroscopio en °/s: 250, 500, 1000 o 2000. Define el
 // registro GYRO_CONFIG y la sensibilidad nominal correspondiente.
-#define GYRO_FULL_SCALE_DPS 500
+#define GYRO_FULL_SCALE_DPS 1000
 
 // Sensibilidad real del giroscopio en LSB/(°/s). Nominales del MPU6500:
 //   +-250 °/s -> 131.0 
@@ -19,7 +19,7 @@
 // Cada sensor difiere algunos puntos porcentuales del nominal: medirlo con el
 // debug de giro (tecla 'r') y copiar aquí el valor. Debe pertenecer al fondo de
 // escala elegido arriba; si no, se ignora y se usa el nominal.
-#define GYRO_SENSITIVITY_LSB_PER_DPS 65.5f
+#define GYRO_SENSITIVITY_LSB_PER_DPS 32.8f
 
 // Desvío máximo aceptado respecto de la sensibilidad nominal (fracción). Un
 // error mayor no es de escala: es un giro mal hecho o el fondo de escala
